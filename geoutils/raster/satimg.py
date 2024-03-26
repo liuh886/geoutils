@@ -13,6 +13,7 @@ from typing import Any
 import numpy as np
 import rasterio as rio
 
+from geoutils._typing import NDArrayNum
 from geoutils.raster import Raster, RasterType
 
 lsat_sensor = {"C": "OLI/TIRS", "E": "ETM+", "T": "TM", "M": "MSS", "O": "OLI", "TI": "TIRS"}
@@ -253,7 +254,7 @@ class SatelliteImage(Raster):  # type: ignore
         self,
         filename_or_dataset: str | RasterType | rio.io.DatasetReader | rio.io.MemoryFile,
         load_data: bool = True,
-        indexes: int | list[int] | None = None,
+        bands: int | list[int] | None = None,
         read_from_fn: bool = True,
         datetime: dt.datetime | None = None,
         tile_name: str | None = None,
@@ -270,7 +271,7 @@ class SatelliteImage(Raster):  # type: ignore
 
         :param filename_or_dataset: The filename of the dataset.
         :param load_data: Load the raster data into the object. Default is True.
-        :param indexes: The band(s) to load into the object. Default is to load all bands.
+        :param bands: The band(s) to load into the object. Default is to load all bands.
         :param read_from_fn: Try to read metadata from the filename
         :param datetime: Provide datetime attribute
         :param tile_name: Provide tile name
@@ -292,7 +293,7 @@ class SatelliteImage(Raster):  # type: ignore
             return
         # Else rely on parent Raster class options (including raised errors)
         else:
-            super().__init__(filename_or_dataset, load_data=load_data, indexes=indexes)
+            super().__init__(filename_or_dataset, load_data=load_data, bands=bands)
 
         # priority to user input
         self._datetime = datetime
@@ -427,7 +428,7 @@ class SatelliteImage(Raster):  # type: ignore
 
         return None
 
-    def copy(self, new_array: np.ndarray | None = None) -> SatelliteImage:
+    def copy(self, new_array: NDArrayNum | None = None) -> SatelliteImage:
         new_satimg = super().copy(new_array=new_array)  # type: ignore
         # all objects here are immutable so no need for a copy method (string and datetime)
         # satimg_attrs = ['satellite', 'sensor', 'product', 'version', 'tile_name', 'datetime'] #taken outside of class

@@ -7,7 +7,7 @@ import geopandas as gpd
 import numpy as np
 import pyproj.exceptions
 import pytest
-import shapely
+from shapely.geometry import Point, Polygon
 
 import geoutils as gu
 import geoutils.projtools as pt
@@ -108,8 +108,8 @@ class TestProjTools:
         """Check that the function works for UPS with points at high latitude."""
 
         # Create a vector of a single point in geographic coordinates
-        point_north = shapely.Point([0, 84])
-        point_south = shapely.Point([0, -84])
+        point_north = Point([0, 84])
+        point_south = Point([0, -84])
         vect_north = gu.Vector(gpd.GeoDataFrame({"geometry": [point_north]}, crs=pyproj.CRS.from_epsg(4326)))
         vect_south = gu.Vector(gpd.GeoDataFrame({"geometry": [point_south]}, crs=pyproj.CRS.from_epsg(4326)))
 
@@ -130,7 +130,7 @@ class TestProjTools:
         randx = np.random.randint(low=img.bounds.left, high=img.bounds.right, size=(nsample,))
         randy = np.random.randint(low=img.bounds.bottom, high=img.bounds.top, size=(nsample,))
 
-        lat, lon = pt.reproject_to_latlon([randx, randy], img.crs)
+        lat, lon = pt.reproject_to_latlon([list(randx), list(randy)], img.crs)
         x, y = pt.reproject_from_latlon([lat, lon], img.crs)
 
         assert np.all(x == randx)
@@ -189,8 +189,8 @@ class TestProjTools:
     )  # type: ignore
     # Try with geographic, a UTM zone and a Robinson
     @pytest.mark.parametrize("out_crs", [pyproj.CRS.from_epsg(4326), pyproj.CRS.from_epsg(32610)])  # type: ignore
-    @pytest.mark.parametrize("densify_pts", [2, 10, 5000])  # type: ignore
-    def test_get_footprint_projected(self, fn_raster_or_vector: str, out_crs: pyproj.CRS, densify_pts: int) -> None:
+    @pytest.mark.parametrize("densify_points", [2, 10, 5000])  # type: ignore
+    def test_get_footprint_projected(self, fn_raster_or_vector: str, out_crs: pyproj.CRS, densify_points: int) -> None:
         """Test the get footprint projected function."""
 
         # Open raster or vector
@@ -200,15 +200,15 @@ class TestProjTools:
             rast_or_vect = gu.Vector(fn_raster_or_vector)
 
         # Get footprint
-        footprint = rast_or_vect.get_footprint_projected(out_crs=out_crs, densify_pts=densify_pts)
+        footprint = rast_or_vect.get_footprint_projected(out_crs=out_crs, densify_points=densify_points)
 
         # Assert it is a vector containing a polygon geometry
         assert isinstance(footprint, gu.Vector)
-        assert isinstance(footprint.geometry[0], shapely.Polygon)
+        assert isinstance(footprint.geometry[0], Polygon)
 
         # Check that the original corner points were conserved
         left, bottom, right, top = rast_or_vect.bounds
-        corners = [shapely.Point([x, y]) for (x, y) in [(left, bottom), (left, top), (right, top), (right, bottom)]]
+        corners = [Point([x, y]) for (x, y) in [(left, bottom), (left, top), (right, top), (right, bottom)]]
         df = gpd.GeoDataFrame({"geometry": corners}, crs=rast_or_vect.crs)
         df_reproj = df.to_crs(crs=out_crs)
 
@@ -216,4 +216,4 @@ class TestProjTools:
 
         # Check that densification yields a logical amount of points
         # (4 initial corner points times the densification factor + the last point)
-        assert len(footprint.geometry[0].exterior.coords[:]) == densify_pts * 4 + 1
+        assert len(footprint.geometry[0].exterior.coords[:]) == densify_points * 4 + 1

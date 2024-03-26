@@ -135,8 +135,8 @@ dmypy.json
 # Emacs backup files
 *~
 
-# version file
-geoutils/version.py
+# Version file
+geoutils/_version.py
 
 # End of https://www.gitignore.io/api/python
 .vim/
@@ -151,6 +151,7 @@ examples/data/
 
 # Directory where myst_nb executes jupyter code
 doc/jupyter_execute/
+doc/source/sg_execution_times.rst
 
 # Files that should have been deleted by Sphinx at end of build (but can exist if build fails)
 examples/io/open_save/myraster.tif

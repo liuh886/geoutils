@@ -2,47 +2,89 @@
 
 from __future__ import annotations
 
+from typing import Literal, overload
+
 import numpy as np
 
-from geoutils.raster.array import get_mask
+from geoutils._typing import MArrayNum, NDArrayNum
+from geoutils.raster.array import get_mask_from_array
+
+
+@overload
+def subsample_array(
+    array: NDArrayNum | MArrayNum,
+    subsample: float | int,
+    return_indices: Literal[False] = False,
+    *,
+    random_state: np.random.RandomState | int | None = None,
+) -> NDArrayNum:
+    ...
+
+
+@overload
+def subsample_array(
+    array: NDArrayNum | MArrayNum,
+    subsample: float | int,
+    return_indices: Literal[True],
+    *,
+    random_state: np.random.RandomState | int | None = None,
+) -> tuple[NDArrayNum, ...]:
+    ...
+
+
+@overload
+def subsample_array(
+    array: NDArrayNum | MArrayNum,
+    subsample: float | int,
+    return_indices: bool = False,
+    random_state: np.random.RandomState | int | None = None,
+) -> NDArrayNum | tuple[NDArrayNum, ...]:
+    ...
 
 
 def subsample_array(
-    array: np.ndarray | np.ma.masked_array,
+    array: NDArrayNum | MArrayNum,
     subsample: float | int,
     return_indices: bool = False,
-    random_state: np.random.RandomState | np.random.Generator | int | None = None,
-) -> np.ndarray:
+    random_state: np.random.RandomState | int | None = None,
+) -> NDArrayNum | tuple[NDArrayNum, ...]:
     """
-    Randomly subsample a 1D or 2D array by a subsampling factor, taking only non NaN/masked values.
+    Randomly subsample a 1D or 2D array by a sampling factor, taking only non NaN/masked values.
 
-    :param array:
-    :param subsample: If <= 1, will be considered a fraction of valid pixels to extract.
-    If > 1 will be considered the number of pixels to extract.
+    :param array: Input array.
+    :param subsample: Subsample size. If <= 1, will be considered a fraction of valid pixels to extract.
+        If > 1 will be considered the number of pixels to extract.
     :param return_indices: If set to True, will return the extracted indices only.
     :param random_state: Random state, or seed number to use for random calculations (for testing)
 
     :returns: The subsampled array (1D) or the indices to extract (same shape as input array)
     """
-    # Define state for random subsampling (to fix results during testing)
+    # Define state for random sampling (to fix results during testing)
     if random_state is None:
-        rnd = np.random.default_rng()
-    elif isinstance(random_state, (np.random.RandomState, np.random.Generator)):
+        rnd: np.random.RandomState | np.random.Generator = np.random.default_rng()
+    elif isinstance(random_state, np.random.RandomState):
         rnd = random_state
     else:
         rnd = np.random.RandomState(np.random.MT19937(np.random.SeedSequence(random_state)))
 
+    # Remove invalid values and flatten array
+    mask = get_mask_from_array(array)  # -> need to remove .squeeze in get_mask
+    valids = np.argwhere(~mask.flatten()).squeeze()
+
     # Get number of points to extract
+    # If subsample is one, we don't perform any subsampling operation, we return the valid array or indices directly
+    if subsample == 1:
+        unraveled_indices = np.unravel_index(valids, array.shape)
+        if return_indices:
+            return unraveled_indices
+        else:
+            return array[unraveled_indices]
     if (subsample <= 1) & (subsample > 0):
-        npoints = int(subsample * np.size(array))
+        npoints = int(subsample * np.count_nonzero(~mask))
     elif subsample > 1:
         npoints = int(subsample)
     else:
         raise ValueError("`subsample` must be > 0")
-
-    # Remove invalid values and flatten array
-    mask = get_mask(array)  # -> need to remove .squeeze in get_mask
-    valids = np.argwhere(~mask.flatten()).squeeze()
 
     # Checks that array and npoints are correct
     assert np.ndim(valids) == 1, "Something is wrong with array dimension, check input data and shape"
@@ -55,7 +97,6 @@ def subsample_array(
 
     if return_indices:
         return unraveled_indices
-
     else:
         return array[unraveled_indices]
 
@@ -98,7 +139,7 @@ def _get_closest_rectangle(size: int) -> tuple[int, int]:
     raise NotImplementedError(f"Function criteria not met for rectangle of size: {size}")
 
 
-def subdivide_array(shape: tuple[int, ...], count: int) -> np.ndarray:
+def subdivide_array(shape: tuple[int, ...], count: int) -> NDArrayNum:
     """
     Create indices for subdivison of an array in a number of blocks.
 

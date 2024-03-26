@@ -41,6 +41,7 @@ extensions = [
     "sphinx.ext.intersphinx",
     # "myst_parser",  !! Not needed with myst_nb !! # Form of Markdown that works with sphinx, used a lot by the Sphinx Book Theme
     "myst_nb",  # MySt for rendering Jupyter notebook in documentation
+    "sphinxarg.ext",  # To generate documentation for argparse tools
 ]
 
 # For sphinx design to work properly
@@ -48,6 +49,8 @@ myst_enable_extensions = ["colon_fence"]
 
 # For myst-nb to find the Jupyter kernel (=environment) to run from
 nb_kernel_rgx_aliases = {".*geoutils.*": "python3"}
+# To raise a Sphinx build error on notebook failure
+nb_execution_raise_on_error = True
 
 intersphinx_mapping = {
     "python": ("https://docs.python.org/", None),
@@ -185,6 +188,11 @@ html_theme_options = {
         "binderhub_url": "https://mybinder.org/",
         "notebook_interface": "jupyterlab",  # For launching Binder in Jupyterlab to open MD files as notebook (downloads them otherwise)
     },
+    "announcement": (
+        "⚠️ Our 0.1 release refactored several early-development functions for long-term stability, "
+        'to update your code see <a href="https://github.com/GlacioHack/geoutils/releases/tag/v0.1.0">here</a>. ⚠️'
+        "<br>Future changes will come with deprecation warnings! 🙂"
+    )
     # "logo_only": True,
     # "icon_links": [
     #         {

@@ -8,18 +8,20 @@ from collections import abc
 from math import ceil, floor
 from typing import Literal
 
-import geopandas
 import geopandas as gpd
 import numpy as np
 import pyproj
 import rasterio as rio
+import shapely.geometry
 import shapely.ops
 from rasterio.crs import CRS
 from shapely.geometry.base import BaseGeometry
 from shapely.geometry.polygon import Polygon
 
+from geoutils._typing import NDArrayNum, Number
 
-def latlon_to_utm(lat: float, lon: float) -> str:
+
+def latlon_to_utm(lat: Number, lon: Number) -> str:
     """
     Get UTM zone for a given latitude and longitude coordinates.
 
@@ -56,6 +58,9 @@ def utm_to_epsg(utm: str) -> int:
 
     :return: EPSG of UTM zone.
     """
+
+    if not isinstance(utm, str):
+        raise TypeError("UTM zone must be a str.")
 
     # Whether UTM is passed as single or double digits, homogenize to single-digit
     utm = str(int(utm[:-1])) + utm[-1].upper()
@@ -108,14 +113,14 @@ def _get_utm_ups_crs(df: gpd.GeoDataFrame, method: Literal["centroid"] | Literal
 
 
 def bounds2poly(
-    boundsGeom: list[float] | rio.io.DatasetReader,
+    bounds_geom: list[float] | rio.io.DatasetReader,
     in_crs: CRS | None = None,
     out_crs: CRS | None = None,
 ) -> Polygon:
     """
     Converts self's bounds into a shapely Polygon. Optionally, returns it into a different CRS.
 
-    :param boundsGeom: A geometry with bounds. Can be either a list of coordinates (xmin, ymin, xmax, ymax),\
+    :param bounds_geom: A geometry with bounds. Can be either a list of coordinates (xmin, ymin, xmax, ymax),\
             a rasterio/Raster object, a geoPandas/Vector object
     :param in_crs: Input CRS
     :param out_crs: Output CRS
@@ -123,22 +128,22 @@ def bounds2poly(
     :returns: Output polygon
     """
     # If boundsGeom is a GeoPandas or Vector object (warning, has both total_bounds and bounds attributes)
-    if hasattr(boundsGeom, "total_bounds"):
-        xmin, ymin, xmax, ymax = boundsGeom.total_bounds  # type: ignore
-        in_crs = boundsGeom.crs  # type: ignore
+    if hasattr(bounds_geom, "total_bounds"):
+        xmin, ymin, xmax, ymax = bounds_geom.total_bounds  # type: ignore
+        in_crs = bounds_geom.crs  # type: ignore
     # If boundsGeom is a rasterio or Raster object
-    elif hasattr(boundsGeom, "bounds"):
-        xmin, ymin, xmax, ymax = boundsGeom.bounds  # type: ignore
-        in_crs = boundsGeom.crs  # type: ignore
+    elif hasattr(bounds_geom, "bounds"):
+        xmin, ymin, xmax, ymax = bounds_geom.bounds  # type: ignore
+        in_crs = bounds_geom.crs  # type: ignore
     # if a list of coordinates
-    elif isinstance(boundsGeom, (list, tuple)):
-        xmin, ymin, xmax, ymax = boundsGeom
+    elif isinstance(bounds_geom, (list, tuple)):
+        xmin, ymin, xmax, ymax = bounds_geom
     else:
         raise ValueError(
             "boundsGeom must a list/tuple of coordinates or an object with attributes bounds or total_bounds."
         )
 
-    corners = ((xmin, ymin), (xmax, ymin), (xmax, ymax), (xmin, ymax))
+    corners = np.array([(xmin, ymin), (xmax, ymin), (xmax, ymax), (xmin, ymax)])
 
     if (in_crs is not None) & (out_crs is not None):
         corners = np.transpose(reproject_points(np.transpose(corners), in_crs, out_crs))
@@ -176,7 +181,7 @@ def merge_bounds(
             "or total_bounds"
         )
 
-    output_poly = bounds2poly(boundsGeom=bounds_list[0])
+    output_poly = bounds2poly(bounds_geom=bounds_list[0])
 
     # Compute the merging
     for boundsGeom in bounds_list[1:]:
@@ -238,19 +243,21 @@ def align_bounds(
     return (left, bottom, right, top)
 
 
-def reproject_points(pts: list[list[float]] | np.ndarray, in_crs: CRS, out_crs: CRS) -> tuple[list[float], list[float]]:
+def reproject_points(
+    points: list[list[float]] | list[float] | tuple[list[float], list[float]] | NDArrayNum, in_crs: CRS, out_crs: CRS
+) -> tuple[list[float], list[float]]:
     """
     Reproject a set of point from input_crs to output_crs.
 
-    :param pts: Input points to be reprojected. Must be of shape (2, N), i.e (x coords, y coords)
+    :param points: Input points to be reprojected. Must be of shape (2, N), i.e (x coords, y coords)
     :param in_crs: Input CRS
     :param out_crs: Output CRS
 
-    :returns: Reprojected points, of same shape as pts.
+    :returns: Reprojected points, of same shape as points.
     """
-    assert np.shape(pts)[0] == 2, "pts must be of shape (2, N)"
+    assert np.shape(points)[0] == 2, "points must be of shape (2, N)"
 
-    x, y = pts
+    x, y = points
     transformer = pyproj.Transformer.from_crs(in_crs, out_crs)
     xout, yout = transformer.transform(x, y)
     return (xout, yout)
@@ -262,37 +269,37 @@ crs_4326 = rio.crs.CRS.from_epsg(4326)
 
 
 def reproject_to_latlon(
-    pts: list[list[float]] | np.ndarray, in_crs: CRS, round_: int = 8
+    points: list[list[float]] | list[float] | NDArrayNum, in_crs: CRS, round_: int = 8
 ) -> tuple[list[float], list[float]]:
     """
     Reproject a set of point from in_crs to lat/lon.
 
-    :param pts: Input points to be reprojected. Must be of shape (2, N), i.e (x coords, y coords)
+    :param points: Input points to be reprojected. Must be of shape (2, N), i.e (x coords, y coords)
     :param in_crs: Input CRS
     :param round_: Output rounding. Default of 8 ensures cm accuracy
 
-    :returns: Reprojected points, of same shape as pts.
+    :returns: Reprojected points, of same shape as points.
     """
-    proj_pts = reproject_points(pts, in_crs, crs_4326)
-    proj_pts = np.round(proj_pts, round_)
-    return proj_pts
+    proj_points = reproject_points(points, in_crs, crs_4326)
+    proj_points = np.round(proj_points, round_)
+    return proj_points
 
 
 def reproject_from_latlon(
-    pts: list[list[float]] | tuple[list[float], list[float]] | np.ndarray, out_crs: CRS, round_: int = 2
+    points: list[list[float]] | tuple[list[float], list[float]] | NDArrayNum, out_crs: CRS, round_: int = 2
 ) -> tuple[list[float], list[float]]:
     """
     Reproject a set of point from lat/lon to out_crs.
 
-    :param pts: Input points to be reprojected. Must be of shape (2, N), i.e (x coords, y coords)
+    :param points: Input points to be reprojected. Must be of shape (2, N), i.e (x coords, y coords)
     :param out_crs: Output CRS
     :param round_: Output rounding. Default of 2 ensures cm accuracy
 
-    :returns: Reprojected points, of same shape as pts.
+    :returns: Reprojected points, of same shape as points.
     """
-    proj_pts = reproject_points(pts, crs_4326, out_crs)
-    proj_pts = np.round(proj_pts, round_)
-    return proj_pts
+    proj_points = reproject_points(points, crs_4326, out_crs)
+    proj_points = np.round(proj_points, round_)
+    return proj_points
 
 
 def reproject_shape(inshape: BaseGeometry, in_crs: CRS, out_crs: CRS) -> BaseGeometry:
@@ -305,7 +312,7 @@ def reproject_shape(inshape: BaseGeometry, in_crs: CRS, out_crs: CRS) -> BaseGeo
 
     :returns: Reprojected geometry
     """
-    reproj = pyproj.Transformer.from_crs(in_crs, out_crs, always_xy=True, skip_equivalent=True).transform
+    reproj = pyproj.Transformer.from_crs(in_crs, out_crs, always_xy=True).transform
     return shapely.ops.transform(reproj, inshape)
 
 
@@ -329,39 +336,41 @@ def compare_proj(proj1: CRS, proj2: CRS) -> bool:
 
 
 def _get_bounds_projected(
-    bounds: rio.coords.BoundingBox, in_crs: CRS, out_crs: CRS, densify_pts: int = 5000
+    bounds: rio.coords.BoundingBox, in_crs: CRS, out_crs: CRS, densify_points: int = 5000
 ) -> rio.coords.BoundingBox:
     """
     Get bounds projected in a specified CRS.
 
     :param in_crs: Input CRS.
     :param out_crs: Output CRS.
-    :param densify_pts: Maximum points to be added between image corners to account for nonlinear edges.
+    :param densify_points: Maximum points to be added between image corners to account for nonlinear edges.
     Reduce if time computation is really critical (ms) or increase if extent is not accurate enough.
     """
 
     # Calculate new bounds
     left, bottom, right, top = bounds
-    new_bounds = rio.warp.transform_bounds(in_crs, out_crs, left, bottom, right, top, densify_pts)
+    new_bounds = rio.warp.transform_bounds(in_crs, out_crs, left, bottom, right, top, densify_points)
     new_bounds = rio.coords.BoundingBox(*new_bounds)
 
     return new_bounds
 
 
-def _densify_geometry(line_geometry: shapely.LineString, densify_pts: int = 5000) -> shapely.LineString:
+def _densify_geometry(
+    line_geometry: shapely.geometry.LineString, densify_points: int = 5000
+) -> shapely.geometry.LineString:
     """
     Densify a linestring geometry.
 
     Inspired by: https://gis.stackexchange.com/questions/372912/how-to-densify-linestring-vertices-in-shapely-geopandas.
 
     :param line_geometry: Linestring.
-    :param densify_pts: Number of points to densify each line.
+    :param densify_points: Number of points to densify each line.
 
     :return: Densified linestring.
     """
 
     # Get the segments (list of linestrings)
-    segments = list(map(shapely.LineString, zip(line_geometry.coords[:-1], line_geometry.coords[1:])))
+    segments = list(map(shapely.geometry.LineString, zip(line_geometry.coords[:-1], line_geometry.coords[1:])))
 
     # To store new coordinate tuples
     xy = []
@@ -373,7 +382,7 @@ def _densify_geometry(line_geometry: shapely.LineString, densify_pts: int = 5000
         length_m = seg.length
 
         # Loop over a distance on the segment length
-        densified_seg = np.linspace(0, length_m, 1 + densify_pts)
+        densified_seg = np.linspace(0, length_m, 1 + densify_points)
         # (removing the last point, as it will be the first point of the next segment,
         # except for the last segment)
         if i < len(segments) - 1:
@@ -387,13 +396,13 @@ def _densify_geometry(line_geometry: shapely.LineString, densify_pts: int = 5000
             xy.append((xp, yp))
 
     # Recreate a new line with densified points
-    densified_line_geometry = shapely.LineString(xy)
+    densified_line_geometry = shapely.geometry.LineString(xy)
 
     return densified_line_geometry
 
 
 def _get_footprint_projected(
-    bounds: rio.coords.BoundingBox, in_crs: CRS, out_crs: CRS, densify_pts: int = 5000
+    bounds: rio.coords.BoundingBox, in_crs: CRS, out_crs: CRS, densify_points: int = 5000
 ) -> gpd.GeoDataFrame:
     """
     Get bounding box footprint projected in a specified CRS.
@@ -403,7 +412,7 @@ def _get_footprint_projected(
 
     :param in_crs: Input CRS.
     :param out_crs: Output CRS.
-    :param densify_pts: Maximum points to be added between image corners to account for non linear edges.
+    :param densify_points: Maximum points to be added between image corners to account for non linear edges.
      Reduce if time computation is really critical (ms) or increase if extent is not accurate enough.
     """
 
@@ -411,13 +420,15 @@ def _get_footprint_projected(
     left, bottom, right, top = bounds
 
     # Create linestring
-    linestring = shapely.LineString([[left, bottom], [left, top], [right, top], [right, bottom], [left, bottom]])
+    linestring = shapely.geometry.LineString(
+        [[left, bottom], [left, top], [right, top], [right, bottom], [left, bottom]]
+    )
 
     # Densify linestring
-    densified_line_geometry = _densify_geometry(linestring, densify_pts=densify_pts)
+    densified_line_geometry = _densify_geometry(linestring, densify_points=densify_points)
 
     # Get polygon from new linestring
-    densified_poly = shapely.Polygon(densified_line_geometry)
+    densified_poly = Polygon(densified_line_geometry)
 
     # Reproject the polygon
     df = gpd.GeoDataFrame({"geometry": [densified_poly]}, crs=in_crs)

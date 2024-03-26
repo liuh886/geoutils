@@ -16,7 +16,7 @@ from geoutils import examples
 from geoutils.raster import RasterType
 
 
-class stack_merge_images:
+class StackMergeImages:
     """
     Test cases for stacking and merging images
     Split an image with some overlap, then stack/merge it, and validate bounds and shape.
@@ -26,6 +26,9 @@ class stack_merge_images:
     def __init__(
         self, image: str, cls: Callable[[str], RasterType] = gu.Raster, different_crs: pyproj.CRS | None = None
     ) -> None:
+
+        warnings.filterwarnings("ignore", category=UserWarning, message="For reprojection, nodata must be set.*")
+
         img = cls(examples.get_path(image))
         self.img = img
 
@@ -38,16 +41,18 @@ class stack_merge_images:
         self.img1.crop(
             rio.coords.BoundingBox(
                 right=x_midpoint + img.res[0] * 3, left=img.bounds.left, top=img.bounds.top, bottom=img.bounds.bottom
-            )
+            ),
+            inplace=True,
         )
         self.img2 = img.copy()
         self.img2.crop(
             rio.coords.BoundingBox(
                 left=x_midpoint - img.res[0] * 3, right=img.bounds.right, top=img.bounds.top, bottom=img.bounds.bottom
-            )
+            ),
+            inplace=True,
         )
         if different_crs:
-            self.img2 = self.img2.reproject(dst_crs=different_crs)
+            self.img2 = self.img2.reproject(crs=different_crs)
 
         # To check that use_ref_bounds work - create a img that do not cover the whole extent
         self.img3 = img.copy()
@@ -57,28 +62,29 @@ class stack_merge_images:
                 right=img.bounds.right - img.res[0] * 2,
                 top=img.bounds.top,
                 bottom=img.bounds.bottom,
-            )
+            ),
+            inplace=True,
         )
 
 
 @pytest.fixture
 def images_1d():  # type: ignore
-    return stack_merge_images("everest_landsat_b4")
+    return StackMergeImages("everest_landsat_b4")
 
 
 @pytest.fixture
 def images_different_crs():  # type: ignore
-    return stack_merge_images("everest_landsat_b4", different_crs=4326)
+    return StackMergeImages("everest_landsat_b4", different_crs=4326)
 
 
 @pytest.fixture
 def sat_images():  # type: ignore
-    return stack_merge_images("everest_landsat_b4", cls=gu.SatelliteImage)
+    return StackMergeImages("everest_landsat_b4", cls=gu.SatelliteImage)
 
 
 @pytest.fixture
 def images_3d():  # type: ignore
-    return stack_merge_images("everest_landsat_rgb")
+    return StackMergeImages("everest_landsat_rgb")
 
 
 class TestMultiRaster:
@@ -95,8 +101,10 @@ class TestMultiRaster:
         """Test stack_rasters"""
 
         # Silence the reprojection warning for default nodata value
-        warnings.filterwarnings("ignore", category=UserWarning, message="New nodata value found in the data array.*")
-        warnings.filterwarnings("ignore", category=UserWarning, message="For reprojection, dst_nodata must be set.*")
+        warnings.filterwarnings(
+            "ignore", category=UserWarning, message="New nodata value cells already exist in the data array.*"
+        )
+        warnings.filterwarnings("ignore", category=UserWarning, message="For reprojection, nodata must be set.*")
 
         # Merge the two overlapping DEMs and check that output bounds and shape is correct
         if rasters.img1.count > 1:
@@ -165,8 +173,10 @@ class TestMultiRaster:
         # Merge the two overlapping DEMs and check that it closely resembles the initial DEM
 
         # Silence the reprojection warning for default nodata value
-        warnings.filterwarnings("ignore", category=UserWarning, message="New nodata value found in the data array.*")
-        warnings.filterwarnings("ignore", category=UserWarning, message="For reprojection, dst_nodata must be set.*")
+        warnings.filterwarnings(
+            "ignore", category=UserWarning, message="New nodata value cells already exist in the data array.*"
+        )
+        warnings.filterwarnings("ignore", category=UserWarning, message="For reprojection, nodata must be set.*")
 
         # Ignore warning already checked in test_stack_rasters
         if rasters.img1.count > 1:
@@ -227,7 +237,7 @@ class TestMultiRaster:
         for k, rst in enumerate(output_rst):
             assert rst.is_loaded
             rst2 = gu.Raster(raster_paths[k])
-            assert rst == rst2
+            assert rst.raster_equal(rst2)
 
         # - Test that with crop=True and ref_grid=None, rasters are cropped only in area of overlap - #
         output_rst = gu.raster.load_multiple_rasters(raster_paths, crop=True, ref_grid=None)
@@ -281,7 +291,7 @@ class TestMultiRaster:
         for k, rst in enumerate(output_rst):
             assert rst.is_loaded
             rst2 = gu.Raster(raster_paths[k])
-            assert rst == rst2
+            assert rst.raster_equal(rst2)
 
         # - With crop=True -> should raise a warning - #
         with pytest.warns(UserWarning, match="Intersection is void, returning unloaded rasters."):

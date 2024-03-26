@@ -60,8 +60,8 @@ documentation.
     Raster.width
     Raster.count
     Raster.count_on_disk
-    Raster.indexes
-    Raster.indexes_on_disk
+    Raster.bands
+    Raster.bands_on_disk
     Raster.res
     Raster.bounds
     Raster.dtypes
@@ -93,7 +93,7 @@ documentation.
 .. autosummary::
     :toctree: gen_modules/
 
-    Raster.show
+    Raster.plot
 ```
 
 ### Get or update data methods
@@ -107,6 +107,8 @@ documentation.
     Raster.set_mask
     Raster.set_nodata
     Raster.get_nanarray
+    Raster.get_mask
+    Raster.subsample
 ```
 
 ### I/O methods
@@ -117,7 +119,7 @@ documentation.
 
     Raster.load
     Raster.save
-    Raster.to_points
+    Raster.to_pointcloud
     Raster.to_rio_dataset
     Raster.to_xarray
 ```
@@ -313,6 +315,15 @@ The equivalent of {attr}`geopandas.GeoDataFrame.bounds` (i.e., a per-feature bou
     Vector.reproject
     Vector.rasterize
     Vector.proximity
+```
+
+### Plotting
+
+```{eval-rst}
+.. autosummary::
+    :toctree: gen_modules/
+
+    Vector.plot
 ```
 
 ### Create mask

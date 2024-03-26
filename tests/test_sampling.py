@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 import geoutils as gu
+from geoutils._typing import NDArrayNum
 
 
 class TestSubsampling:
@@ -33,7 +34,7 @@ class TestSubsampling:
     assert np.count_nonzero(array3D.mask) > 0
 
     @pytest.mark.parametrize("array", [array1D, array2D, array3D])  # type: ignore
-    def test_subsample(self, array: np.ndarray) -> None:
+    def test_subsample(self, array: NDArrayNum) -> None:
         """
         Test gu.raster.subsample_array.
         """
@@ -52,16 +53,20 @@ class TestSubsampling:
         random_values = gu.raster.subsample_array(array, subsample=1)
         assert np.all(np.sort(random_values) == array[~array.mask])
 
+        # Check that order is preserved for subsample = 1 (no random sampling, simply returns valid mask)
+        random_values_2 = gu.raster.subsample_array(array, subsample=1)
+        assert np.array_equal(random_values, random_values_2)
+
         # Test if subsample < 1
         random_values = gu.raster.subsample_array(array, subsample=0.5)
-        assert np.size(random_values) == int(np.size(array) * 0.5)
+        assert np.size(random_values) == int(np.count_nonzero(~array.mask) * 0.5)
 
         # Test with optional argument return_indices
         indices = gu.raster.subsample_array(array, subsample=0.3, return_indices=True)
         assert np.ndim(indices) == 2
         assert len(indices) == np.ndim(array)
         assert np.ndim(array[indices]) == 1
-        assert np.size(array[indices]) == int(np.size(array) * 0.3)
+        assert np.size(array[indices]) == int(np.count_nonzero(~array.mask) * 0.3)
 
         # Check that we can pass an integer to fix the random state
         sub42 = gu.raster.subsample_array(array, subsample=10, random_state=42)

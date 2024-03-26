@@ -34,24 +34,24 @@ A {class}`~geoutils.Raster` also contains many derivative attributes, with namin
 A first category includes georeferencing attributes directly derived from {attr}`~geoutils.Raster.transform`, namely: {attr}`~geoutils.Raster.shape`,
 {attr}`~geoutils.Raster.height`, {attr}`~geoutils.Raster.width`, {attr}`~geoutils.Raster.res`, {attr}`~geoutils.Raster.bounds`.
 
-A second category concerns the attributes derived from the raster array shape and type: {attr}`~geoutils.Raster.count`, {attr}`~geoutils.Raster.indexes` and
-{attr}`~geoutils.Raster.dtypes`. The two former refer to the number of bands loaded in a {class}`~geoutils.Raster`, and their indexes.
+A second category concerns the attributes derived from the raster array shape and type: {attr}`~geoutils.Raster.count`, {attr}`~geoutils.Raster.bands` and
+{attr}`~geoutils.Raster.dtypes`. The two former refer to the number of bands loaded in a {class}`~geoutils.Raster`, and the band indexes.
 
 ```{important}
-The {attr}`~geoutils.Raster.indexes` of {class}`rasterio.io.DatasetReader` start from 1 and not 0, be careful when instantiating or loading from a
+The {attr}`~geoutils.Raster.bands` of {class}`rasterio.io.DatasetReader` start from 1 and not 0, be careful when instantiating or loading from a
 multi-band raster!
 ```
 
 Finally, the remaining attributes are only relevant when instantiating from a **on-disk** file: {attr}`~geoutils.Raster.name`, {attr}`~geoutils.Raster.driver`,
-{attr}`~geoutils.Raster.count_on_disk`, {attr}`~geoutils.Raster.indexes_on_disk`, {attr}`~geoutils.Raster.is_loaded` and {attr}`~geoutils.Raster.is_modified`.
+{attr}`~geoutils.Raster.count_on_disk`, {attr}`~geoutils.Raster.bands_on_disk`, {attr}`~geoutils.Raster.is_loaded` and {attr}`~geoutils.Raster.is_modified`.
 
 
 ```{note}
-The {attr}`~geoutils.Raster.count` and {attr}`~geoutils.Raster.indexes` attributes always exist, while {attr}`~geoutils.Raster.count_on_disk` and
-{attr}`~geoutils.Raster.indexes_on_disk` only refers to the number of bands on the **on-disk** dataset, if it exists.
+The {attr}`~geoutils.Raster.count` and {attr}`~geoutils.Raster.bands` attributes always exist, while {attr}`~geoutils.Raster.count_on_disk` and
+{attr}`~geoutils.Raster.bands_on_disk` only refers to the number of bands on the **on-disk** dataset, if it exists.
 
 For example, {attr}`~geoutils.Raster.count` and {attr}`~geoutils.Raster.count_on_disk` will differ when a single band is loaded from a
-3-band **on-disk** file, by passing a single index to the `indexes` argument in {class}`~geoutils.Raster` or {func}`~geoutils.Raster.load`.
+3-band **on-disk** file, by passing a single index to the `bands` argument in {class}`~geoutils.Raster` or {func}`~geoutils.Raster.load`.
 ```
 
 The complete list of {class}`~geoutils.Raster` attributes with description is available in {ref}`dedicated sections of the API<api-raster-attrs>`.
@@ -222,8 +222,8 @@ print(rast.bounds)
 ```{code-cell} ipython3
 # Reproject to smaller bounds and higher resolution
 rast_reproj = rast.reproject(
-    dst_res=0.1,
-    dst_bounds={"left": 0, "bottom": 0, "right": 0.75, "top": 0.75},
+    res=0.1,
+    bounds={"left": 0, "bottom": 0, "right": 0.75, "top": 0.75},
     resampling="cubic")
 rast_reproj
 ```
@@ -253,12 +253,12 @@ See {ref}`core-match-ref` for more details.
 ```
 
 The {func}`~geoutils.Raster.crop` function can also be passed a {class}`list` or {class}`tuple` of bounds (`xmin`, `ymin`, `xmax`, `ymax`). By default,
-{func}`~geoutils.Raster.crop` is done in-place.
+{func}`~geoutils.Raster.crop` returns a new Raster.
 For more details, see the {ref}`specific section and function descriptions in the API<api-geo-handle>`.
 
 ```{code-cell} ipython3
 # Crop raster to smaller bounds
-rast_crop = rast.crop(crop_geom=(0.3, 0.3, 1, 1), inplace=False)
+rast_crop = rast.crop(crop_geom=(0.3, 0.3, 1, 1))
 print(rast_crop.bounds)
 ```
 
@@ -317,7 +317,7 @@ rast_reproj.value_at_coords(x=0.5, y=0.5, window=3, reducer_function=np.ma.media
 
 ```{code-cell} ipython3
 # Interpolate coordinate value with quintic algorithm
-rast_reproj.interp_points([(0.5, 0.5)], mode="quintic")
+rast_reproj.interp_points([(0.5, 0.5)], method="quintic")
 ```
 
 ```{note}
@@ -332,7 +332,7 @@ A {class}`~geoutils.Raster` can be exported to different formats, to facilitate 
 Those include exporting to:
 - a {class}`xarray.Dataset` with {class}`~geoutils.Raster.to_xarray`,
 - a {class}`rasterio.io.DatasetReader` with {class}`~geoutils.Raster.to_rio_dataset`,
-- a {class}`numpy.ndarray` or {class}`geoutils.Vector` as a point cloud with {class}`~geoutils.Raster.to_points`.
+- a {class}`numpy.ndarray` or {class}`geoutils.Vector` as a point cloud with {class}`~geoutils.Raster.to_pointcloud`.
 
 ```{code-cell} ipython3
 # Export to rasterio dataset-reader through a memoryfile
@@ -341,7 +341,7 @@ rast_reproj.to_rio_dataset()
 
 ```{code-cell} ipython3
 # Export to geopandas dataframe
-rast_reproj.to_points()
+rast_reproj.to_pointcloud()
 ```
 
 ```{code-cell} ipython3

@@ -8,6 +8,7 @@ import pathlib
 import re
 import tempfile
 import warnings
+from io import StringIO
 from tempfile import TemporaryFile
 
 import matplotlib.pyplot as plt
@@ -15,11 +16,13 @@ import numpy as np
 import pytest
 import rasterio as rio
 import xarray as xr
-from pylint import epylint
+from pylint.lint import Run
+from pylint.reporters.text import TextReporter
 
 import geoutils as gu
 import geoutils.projtools as pt
 from geoutils import examples
+from geoutils._typing import MArrayNum, NDArrayNum
 from geoutils.misc import resampling_method_from_str
 from geoutils.projtools import reproject_to_latlon
 from geoutils.raster.raster import _default_nodata, _default_rio_attrs
@@ -29,10 +32,12 @@ DO_PLOT = False
 
 def run_gdal_proximity(
     input_raster: gu.Raster, target_values: list[float] | None, distunits: str = "GEO"
-) -> np.ndarray:
+) -> NDArrayNum:
     """Run GDAL's ComputeProximity and return the read numpy array."""
     # Rasterio strongly recommends against importing gdal along rio, so this is done here instead.
     from osgeo import gdal, gdalconst
+
+    gdal.UseExceptions()
 
     # Initiate empty GDAL raster for proximity output
     drv = gdal.GetDriverByName("MEM")
@@ -121,8 +126,7 @@ class TestRaster:
         assert r0.count != r2.count
 
         # Test that loaded data are always masked_arrays (but the mask may be empty, i.e. 'False')
-        assert np.ma.isMaskedArray(gu.Raster(example, masked=True).data)
-        assert np.ma.isMaskedArray(gu.Raster(example, masked=False).data)
+        assert np.ma.isMaskedArray(gu.Raster(example).data)
 
         # Check that an error is raised when instantiating with an array
         with pytest.raises(
@@ -169,6 +173,10 @@ class TestRaster:
 
         r = gu.Raster(example)
 
+        # Check default runs without error (prints to screen)
+        output = r.info()
+        assert output is None
+
         # Check all is good with passing attributes
         with rio.open(example) as dataset:
             for attr in _default_rio_attrs:
@@ -177,7 +185,7 @@ class TestRaster:
         # Check that the stats=True flag doesn't trigger a warning
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message="New nodata.*", category=UserWarning)
-            stats = r.info(stats=True)
+            stats = r.info(stats=True, verbose=False)
 
         # Check the stats adapt to nodata values
         if r.dtypes[0] == "uint8":
@@ -193,7 +201,7 @@ class TestRaster:
             with pytest.warns(UserWarning):
                 r.set_nodata(-99999)
 
-        new_stats = r.info(stats=True)
+        new_stats = r.info(stats=True, verbose=False)
         for i, line in enumerate(stats.splitlines()):
             if "MINIMUM" not in line:
                 continue
@@ -226,8 +234,8 @@ class TestRaster:
         assert r.shape == (r.height, r.width)
         assert r.count == 1
         assert r.count_on_disk == 1
-        assert r.indexes == (1,)
-        assert r.indexes_on_disk == (1,)
+        assert r.bands == (1,)
+        assert r.bands_on_disk == (1,)
         assert np.array_equal(r.dtypes, ["uint8"])
         assert r.transform == rio.transform.Affine(30.0, 0.0, 478000.0, 0.0, -30.0, 3108140.0)
         assert np.array_equal(r.res, [30.0, 30.0])
@@ -244,8 +252,8 @@ class TestRaster:
         assert r2.shape == (r2.height, r2.width)
         assert r2.count == 1
         assert r.count_on_disk == 1
-        assert r.indexes == (1,)
-        assert r.indexes_on_disk == (1,)
+        assert r.bands == (1,)
+        assert r.bands_on_disk == (1,)
         assert np.array_equal(r2.dtypes, ["float32"])
         assert r2.transform == rio.transform.Affine(30.0, 0.0, 627175.0, 0.0, -30.0, 4852085.0)
         assert np.array_equal(r2.res, [30.0, 30.0])
@@ -257,8 +265,8 @@ class TestRaster:
         assert r.is_loaded
         assert r.count == 1
         assert r.count_on_disk == 1
-        assert r.indexes == (1,)
-        assert r.indexes_on_disk == (1,)
+        assert r.bands == (1,)
+        assert r.bands_on_disk == (1,)
         assert r.data.shape == (r.height, r.width)
 
         # Test 3 - single band, loading data
@@ -266,20 +274,20 @@ class TestRaster:
         assert r.is_loaded
         assert r.count == 1
         assert r.count_on_disk == 1
-        assert r.indexes == (1,)
-        assert r.indexes_on_disk == (1,)
+        assert r.bands == (1,)
+        assert r.bands_on_disk == (1,)
         assert r.data.shape == (r.height, r.width)
 
         # Test 4 - multiple bands, load all bands
         r = gu.Raster(self.landsat_rgb_path, load_data=True)
         assert r.count == 3
         assert r.count_on_disk == 3
-        assert r.indexes == (
+        assert r.bands == (
             1,
             2,
             3,
         )
-        assert r.indexes_on_disk == (
+        assert r.bands_on_disk == (
             1,
             2,
             3,
@@ -287,37 +295,37 @@ class TestRaster:
         assert r.data.shape == (r.count, r.height, r.width)
 
         # Test 5 - multiple bands, load one band only
-        r = gu.Raster(self.landsat_rgb_path, load_data=True, indexes=1)
+        r = gu.Raster(self.landsat_rgb_path, load_data=True, bands=1)
         assert r.count == 1
         assert r.count_on_disk == 3
-        assert r.indexes == (1,)
-        assert r.indexes_on_disk == (1, 2, 3)
+        assert r.bands == (1,)
+        assert r.bands_on_disk == (1, 2, 3)
         assert r.data.shape == (r.height, r.width)
 
         # Test 6 - multiple bands, load a list of bands
-        r = gu.Raster(self.landsat_rgb_path, load_data=True, indexes=[2, 3])
+        r = gu.Raster(self.landsat_rgb_path, load_data=True, bands=[2, 3])
         assert r.count == 2
         assert r.count_on_disk == 3
-        assert r.indexes == (1, 2)
-        assert r.indexes_on_disk == (1, 2, 3)
+        assert r.bands == (1, 2)
+        assert r.bands_on_disk == (1, 2, 3)
         assert r.data.shape == (r.count, r.height, r.width)
 
         # Test 7 - load a single band a posteriori calling load()
         r = gu.Raster(self.landsat_rgb_path)
-        r.load(indexes=1)
+        r.load(bands=1)
         assert r.count == 1
         assert r.count_on_disk == 3
-        assert r.indexes == (1,)
-        assert r.indexes_on_disk == (1, 2, 3)
+        assert r.bands == (1,)
+        assert r.bands_on_disk == (1, 2, 3)
         assert r.data.shape == (r.height, r.width)
 
         # Test 8 - load a list of band a posteriori calling load()
         r = gu.Raster(self.landsat_rgb_path)
-        r.load(indexes=[2, 3])
+        r.load(bands=[2, 3])
         assert r.count == 2
         assert r.count_on_disk == 3
-        assert r.indexes == (1, 2)
-        assert r.indexes_on_disk == (1, 2, 3)
+        assert r.bands == (1, 2)
+        assert r.bands_on_disk == (1, 2, 3)
         assert r.data.shape == (r.count, r.height, r.width)
 
         # Check that errors are raised when appropriate
@@ -330,6 +338,24 @@ class TestRaster:
             r = gu.Raster(self.landsat_b4_path)
             r.filename = None
             r.load()
+
+    @pytest.mark.parametrize("example", [landsat_b4_path, aster_dem_path, landsat_rgb_path])  # type: ignore
+    def test_load_only_mask(self, example: str) -> None:
+        """
+        Test that loading only mask works properly.
+        """
+
+        # Load raster with and without loading
+        r_loaded = gu.Raster(example, load_data=True)
+        r_notloaded = gu.Raster(example)
+
+        # Get the mask for the two options
+        mask_loaded = np.ma.getmaskarray(r_loaded.data)
+        mask_notloaded = r_notloaded._load_only_mask()
+
+        # Data should not be loaded and masks should be equal
+        assert not r_notloaded.is_loaded
+        assert np.array_equal(mask_notloaded, mask_loaded)
 
     @pytest.mark.parametrize("example", [landsat_b4_path, aster_dem_path])  # type: ignore
     def test_to_rio_dataset(self, example: str):
@@ -355,7 +381,7 @@ class TestRaster:
     def test_to_xarray(self, example: str):
         """Test the export to a xarray dataset"""
 
-        # Open raster and export to rio dataset
+        # Open raster and export to xarray dataset
         rst = gu.Raster(example)
         ds = rst.to_xarray()
 
@@ -383,13 +409,36 @@ class TestRaster:
 
         # Check that the arrays are equal in NaN type
         if rst.count > 1:
-            assert np.array_equal(rst.data.data, ds.data)
+            assert np.array_equal(rst.get_nanarray(), ds.data.squeeze(), equal_nan=True)
         else:
-            assert np.array_equal(rst.data.data, ds.data.squeeze())
+            assert np.array_equal(rst.get_nanarray(), ds.data.squeeze(), equal_nan=True)
+
+    @pytest.mark.parametrize("example", [landsat_b4_path, aster_dem_path, landsat_rgb_path])  # type: ignore
+    def test_from_xarray(self, example: str):
+        """Test raster creation from a xarray dataset, not fully reversible with to_xarray due to float conversion"""
+
+        # Open raster and export to xarray, then import to xarray dataset
+        rst = gu.Raster(example)
+        ds = rst.to_xarray()
+        rst2 = gu.Raster.from_xarray(ds=ds)
+
+        # Exporting to a Xarray dataset results in loss of information to float32
+        # Check that the output equals the input converted to float32 (not fully reversible)
+        assert rst.astype("float32", convert_nodata=False).raster_equal(rst2, strict_masked=False)
+
+        # Test with the dtype argument to convert back to original raster even if integer-type
+        if np.issubdtype(rst.dtypes[0], np.integer):
+            # Set an existing nodata value, because all of our integer-type example datasets currently have "None"
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message="New nodata value cells already exist.*")
+                rst.set_nodata(new_nodata=255)
+            ds = rst.to_xarray()
+            rst3 = gu.Raster.from_xarray(ds=ds, dtype=rst.dtypes[0])
+            assert rst3.raster_equal(rst, strict_masked=False)
 
     @pytest.mark.parametrize("nodata_init", [None, "type_default"])  # type: ignore
     @pytest.mark.parametrize(
-        "dtype", ["uint8", "int8", "uint16", "int16", "uint32", "int32", "float32", "float64", "longdouble"]
+        "dtype", ["uint8", "int8", "uint16", "int16", "uint32", "int32", "float32", "float64"]
     )  # type: ignore
     def test_data_setter(self, dtype: str, nodata_init: str | None) -> None:
         """
@@ -404,6 +453,7 @@ class TestRaster:
         4. Masks non-finite values that are unmasked, whether the input is a classic array or a masked_array,
         5. Raises an error if the new data does not have the right shape,
         6. Raises an error if the new data does not have the dtype of the Raster.
+        7. Raises a warning if the new data has the nodata value in the masked array, but unmasked.
         """
 
         # Initiate a random array for testing
@@ -412,8 +462,8 @@ class TestRaster:
 
         # Create random values between the lower and upper limit of the data type, max absolute 99999 for floats
         if "int" in dtype:
-            val_min = np.iinfo(int_type=dtype).min
-            val_max = np.iinfo(int_type=dtype).max
+            val_min: int = np.iinfo(int_type=dtype).min  # type: ignore
+            val_max: int = np.iinfo(int_type=dtype).max  # type: ignore
             randint_dtype = dtype
         else:
             val_min = -99999
@@ -422,7 +472,9 @@ class TestRaster:
 
         # Fix the random seed
         np.random.seed(42)
-        arr = np.random.randint(low=val_min, high=val_max, size=(width, height), dtype=randint_dtype).astype(dtype)
+        arr = np.random.randint(
+            low=val_min, high=val_max, size=(width, height), dtype=randint_dtype  # type: ignore
+        ).astype(dtype)
         mask = np.random.randint(0, 2, size=(width, height), dtype=bool)
 
         # Check that we are actually masking stuff
@@ -563,6 +615,172 @@ class TestRaster:
         ):
             rst.data = rst.data.reshape(new_shape)
 
+        # Last part: Check the replacing of nodata values that were unmasked
+
+        # Check that feeding an array with a nodata value unmasked raises the warning and corrects it
+        nodata = 126
+        ma = np.ma.masked_array(arr, mask=mask)
+        ma.data[0, 0] = nodata
+        ma.mask[0, 0] = False
+        with pytest.warns(UserWarning, match="Unmasked values equal to the nodata value found in data array.*"):
+            # Issue from user when creating the array
+            raster = gu.Raster.from_array(data=ma, transform=transform, crs=None, nodata=nodata)
+        assert raster.data.mask[0, 0]
+
+        # Check that it can happen during a numerical operation
+        ma = np.ma.masked_array(arr, mask=mask)
+        ma.data[0, 0] = 125
+        ma.mask[0, 0] = False
+        raster = gu.Raster.from_array(data=ma, transform=transform, crs=None, nodata=126)
+        with pytest.warns(UserWarning, match="Unmasked values equal to the nodata value found in data array.*"):
+            # Issue during numerical operation
+            new_raster = raster + 1
+        assert new_raster.data.mask[0, 0]
+
+    def test_area_or_point(self) -> None:
+        """Check area or point attribute getter, setter and related warnings"""
+
+        # 1/ Getter and instantiation
+        # Check existing file based on a priori knowledge
+        raster_point = gu.Raster(self.landsat_b4_path)
+        assert raster_point.area_or_point == "Point"
+
+        raster_area = gu.Raster(self.aster_dem_path)
+        assert raster_area.area_or_point == "Area"
+
+        # 2/ Setter
+        # For None, it will remove the key from the tags dictionary
+        raster_point.area_or_point = None
+        assert raster_point.area_or_point is None
+        assert "AREA_OR_POINT" not in raster_point.tags
+
+        # For a good value, it will update the tags
+        raster_point.area_or_point = "Point"
+        assert raster_point.area_or_point == "Point"
+        assert "AREA_OR_POINT" in raster_point.tags and raster_point.tags["AREA_OR_POINT"] == "Point"
+
+        # 2.5/ Setter shift and using set_area_or_point() with options
+        old_transform = raster_point.transform
+        # Setting "Area" from "Point" will shift the transform by default
+        raster_point.area_or_point = "Area"
+        assert raster_point.area_or_point == "Area"
+        assert raster_point.transform != old_transform
+
+        # Setting "Point" should give back the original transform
+        raster_point.area_or_point = "Point"
+        assert raster_point.area_or_point == "Point"
+        assert raster_point.transform == old_transform
+
+        # Setting None or "Point" should trigger no shift
+        raster_point.area_or_point = "Point"
+        assert raster_point.area_or_point == "Point"
+        assert raster_point.transform == old_transform
+        raster_point.area_or_point = None
+        assert raster_point.area_or_point is None
+        assert raster_point.transform == old_transform
+
+        # Setting "Area" passing a shift argument of False also shouldn't
+        raster_point.set_area_or_point("Area", shift_area_or_point=False)
+        assert raster_point.area_or_point == "Area"
+        assert raster_point.transform == old_transform
+
+        # Setting "Area" with a globally False argument of shift_area_or_point also shouldn't
+        gu.config["shift_area_or_point"] = False
+        raster_point.set_area_or_point("Point")
+        assert raster_point.area_or_point == "Point"
+        assert raster_point.transform == old_transform
+        # We reset the config argument
+        gu.config["shift_area_or_point"] = True
+
+        # 3/ With function creating a single Raster
+
+        # From array
+        raster_point_fromarray = gu.Raster.from_array(
+            data=raster_point.data,
+            transform=raster_point.transform,
+            area_or_point=raster_point.area_or_point,
+            crs=raster_point.crs,
+        )
+        assert raster_point.area_or_point == raster_point_fromarray.area_or_point
+
+        # Copy
+        raster_point_copy = raster_point.copy()
+        assert raster_point.area_or_point == raster_point_copy.area_or_point
+
+    def test_consistency_shift_area_or_point(self) -> None:
+        """
+        Check that the pixel interpration shifts for rasters (in set_area_or_point) and for points (xy2ij and
+        interp_points) are consistent.
+        """
+
+        # Create a small raster to test on
+        rst_arr = np.arange(25, dtype="int32").reshape(5, 5)
+        rst = gu.Raster.from_array(rst_arr, transform=rio.transform.from_origin(0, 5, 1, 1), crs=4326)
+
+        # Below, we compare the coordinates of shifted raster and shifted points
+
+        # 0/ Without shift, should always be the same for "Area", as nothing happens
+
+        # For "Area", all the same
+        rst01 = rst.copy()
+        rst01.set_area_or_point("Area", shift_area_or_point=False)
+        ul1 = (rst01.bounds.left, rst01.bounds.top)
+        ul2 = rst01.ij2xy(0, 0)
+        # We can simply check that the upper left corner is at the same coordinates
+        assert ul1 == ul2
+
+        # For "Point", 0.5/0.5 index shift should match the upper left corner
+        rst02 = rst.copy()
+        rst02.set_area_or_point("Point", shift_area_or_point=False)
+        ul1 = (rst02.bounds.left, rst02.bounds.top)
+        ul2 = rst02.ij2xy(0.5, 0.5)
+        # We can simply check that the upper left corner is at the same coordinates
+        assert ul1 == ul2
+
+        # 1/ Shifting from "Point" to "Area"
+
+        # As a raster: set to "Point" without shift, then shift to "Area"
+        rst1 = rst.copy()
+        rst1.set_area_or_point("Point", shift_area_or_point=False)
+        rst1.set_area_or_point("Area")  # This shifts the transform and thus upper-left coordinates
+        ul1 = (rst1.bounds.left, rst1.bounds.top)
+
+        # As point: set to "Point" and simply extract the coordinates which already includes shifting in ij2xy
+        rst2 = rst.copy()
+        rst2.set_area_or_point("Point", shift_area_or_point=False)
+        # Upper left coordinates should match the 0/0 pixel
+        ul2 = rst2.ij2xy(0, 0)
+
+        assert ul1 == ul2
+
+        # An "Area" raster with the same georeferencing as a "Point" raster is shifted left
+        # and upwards by half a pixel (according to gdalinfo,
+        # e.g. https://github.com/opengeospatial/ogcapi-coverages/issues/92)
+        assert rst1.bounds.left == rst.bounds.left - rst.res[0] / 2
+        assert rst1.bounds.top == rst.bounds.top + rst.res[1] / 2
+
+        # 2/ From "Area" to "Point"
+
+        # As a raster: set to "Area" without shift, then shift to "Point"
+        rst1 = rst.copy()
+        rst1.set_area_or_point("Area", shift_area_or_point=False)
+        rst1.set_area_or_point("Point")  # This shifts the transform and thus upper-left coordinates
+        ul1 = (rst1.bounds.left, rst1.bounds.top)
+
+        # As point: set to "Point" and simply extract the coordinates
+        rst2 = rst.copy()
+        rst2.set_area_or_point("Area", shift_area_or_point=False)
+        # Upper left coordinates should match 0.5/0.5 pixel
+        ul2 = rst2.ij2xy(0.5, 0.5)
+
+        assert ul1 == ul2
+
+        # A "Point" raster with the same georeferencing as an "Area" raster is shifted right
+        # and downwards by half a pixel (according to gdalinfo,
+        # e.g. https://github.com/opengeospatial/ogcapi-coverages/issues/92)
+        assert rst1.bounds.left == rst.bounds.left + rst.res[0] / 2
+        assert rst1.bounds.top == rst.bounds.top - rst.res[1] / 2
+
     @pytest.mark.parametrize("example", [aster_dem_path, landsat_b4_path, landsat_rgb_path])  # type: ignore
     def test_get_nanarray(self, example: str) -> None:
         """
@@ -602,33 +820,78 @@ class TestRaster:
         mask = ~mask
         assert rst.raster_equal(rst_copy)
 
-    def test_downsampling(self) -> None:
+    @pytest.mark.parametrize("example", [aster_dem_path, landsat_b4_path, landsat_rgb_path])  # type: ignore
+    def test_downsampling(self, example: str) -> None:
         """
-        Check that self.data is correct when using downsampling
+        Check that self metadata are correctly updated when using downsampling
         """
-        # Test single band
-        r = gu.Raster(self.landsat_b4_path, downsample=4)
-        assert r.data.shape == (164, 200)
-        assert r.height == 164
-        assert r.width == 200
+        # Load raster at full resolution
+        rst_orig = gu.Raster(example)
+        bounds_orig = rst_orig.bounds
 
-        # Test multiple band
-        r = gu.Raster(self.landsat_rgb_path, downsample=2)
-        assert r.data.shape == (3, 328, 400)
+        # -- Tries various downsampling factors to ensure rounding is needed in at least one case --
+        for down_fact in np.arange(2, 8):
+            rst_down = gu.Raster(example, downsample=int(down_fact))
 
-        # Test that xy2ij are consistent with new image
-        # Upper left
-        assert r.xy2ij(r.bounds.left, r.bounds.top) == (0, 0)
-        # Upper right
-        assert r.xy2ij(r.bounds.right + r.res[0], r.bounds.top) == (0, r.width + 1)
-        # Bottom right
-        assert r.xy2ij(r.bounds.right + r.res[0], r.bounds.bottom) == (r.height, r.width + 1)
-        # One pixel right and down
-        assert r.xy2ij(r.bounds.left + r.res[0], r.bounds.top - r.res[1]) == (1, 1)
+            # - Check that output resolution is as intended -
+            assert rst_down.res[0] == rst_orig.res[0] * down_fact
+            assert rst_down.res[1] == rst_orig.res[1] * down_fact
 
-        # Check that error is raised when downsampling value is not valid
+            # - Check that downsampled width and height are as intended -
+            # Due to rounding, width/height can be up to 1 pixel larger than unrounded value
+            assert abs(rst_down.width - rst_orig.width / down_fact) < 1
+            assert abs(rst_down.height - rst_orig.height / down_fact) < 1
+            assert rst_down.shape == (rst_down.height, rst_down.width)
+
+            # - Check that bounds are updated accordingly -
+            # left/top bounds should be the same, right/bottom should be rounded to nearest pixel
+            bounds_down = rst_down.bounds
+            assert bounds_down.left == bounds_orig.left
+            assert bounds_down.top == bounds_orig.top
+            assert abs(bounds_down.right - bounds_orig.right) < rst_down.res[0]
+            assert abs(bounds_down.bottom - bounds_orig.bottom) < rst_down.res[1]
+
+            # - Check that metadata are consistent, with/out loading data -
+            assert not rst_down.is_loaded
+            width_unload = rst_down.width
+            height_unload = rst_down.height
+            bounds_unload = rst_down.bounds
+            rst_down.load()
+            width_load = rst_down.width
+            height_load = rst_down.height
+            bounds_load = rst_down.bounds
+            assert width_load == width_unload
+            assert height_load == height_unload
+            assert bounds_load == bounds_unload
+
+            # - Test that xy2ij are consistent with new image -
+            # Upper left
+            assert rst_down.xy2ij(rst_down.bounds.left, rst_down.bounds.top, shift_area_or_point=False) == (0, 0)
+            # Upper right
+            assert rst_down.xy2ij(
+                rst_down.bounds.right + rst_down.res[0], rst_down.bounds.top, shift_area_or_point=False
+            ) == (
+                0,
+                rst_down.width + 1,
+            )
+            # Bottom right
+            assert rst_down.xy2ij(
+                rst_down.bounds.right + rst_down.res[0], rst_down.bounds.bottom, shift_area_or_point=False
+            ) == (
+                rst_down.height,
+                rst_down.width + 1,
+            )
+            # One pixel right and down
+            assert rst_down.xy2ij(
+                rst_down.bounds.left + rst_down.res[0], rst_down.bounds.top - rst_down.res[1], shift_area_or_point=False
+            ) == (
+                1,
+                1,
+            )
+
+        # -- Check that error is raised when downsampling value is not valid --
         with pytest.raises(TypeError, match="downsample must be of type int or float."):
-            gu.Raster(self.landsat_b4_path, downsample=[1, 1])  # type: ignore
+            gu.Raster(example, downsample=[1, 1])  # type: ignore
 
     def test_add_sub(self) -> None:
         """
@@ -868,6 +1131,8 @@ class TestRaster:
     def test_getitem_setitem(self, example: str) -> None:
         """Test the __getitem__ method ([]) for indexing and __setitem__ for index assignment."""
 
+        # -- First, we test mask or boolean array indexing and assignment, specific to rasters --
+
         # Open a Raster
         rst = gu.Raster(example)
 
@@ -892,29 +1157,65 @@ class TestRaster:
         # The rasters should be the same
         assert rst2.raster_equal(rst)
 
-        # Check that errors are raised for both indexing and index assignment
+        # -- Second, we test NumPy indexes (slices, integers, ellipses, new axes) --
+
+        # Indexing
+        assert np.ma.allequal(rst[0], rst.data[0])  # Test an integer
+        assert np.ma.allequal(rst[0:10], rst.data[0:10])  # Test a slice
+        # New axis adds a dimension, but the 0 index reduces one, so we still get a 2D raster
+        assert np.ma.allequal(rst[np.newaxis, 0], rst.data[np.newaxis, 0])  # Test a new axis
+        assert np.ma.allequal(rst[...], rst.data[...])  # Test an ellipsis
+
+        # Index assignment
+        rst[0] = 1
+        assert np.ma.allequal(rst.data[0], np.ones(np.shape(rst.data[0])))  # Test an integer
+        rst[0:10] = 1
+        assert np.ma.allequal(rst.data[0:10], np.ones(np.shape(rst.data[0:10])))  # Test a slice
+        # Same as above for the new axis
+        rst[0, np.newaxis] = 1
+        assert np.ma.allequal(rst.data[0, np.newaxis], np.ones(np.shape(rst.data[0, np.newaxis])))  # Test a new axis
+        rst[...] = 1
+        assert np.ma.allequal(rst.data[...], np.ones(np.shape(rst.data[...])))  # Test an ellipsis
+
+        # -- Finally, we check that errors are raised for both indexing and index assignment --
+
+        # For indexing
+        op_name_index = "an indexing operation"
+        op_name_assign = "an index assignment operation"
+        message_raster = (
+            "Both rasters must have the same shape, transform and CRS for {}. "
+            "For example, use raster1 = raster1.reproject(raster2) to reproject raster1 on the "
+            "same grid and CRS than raster2."
+        )
+        message_array = (
+            "The raster and array must have the same shape for {}. "
+            "For example, if the array comes from another raster, use raster1 = "
+            "raster1.reproject(raster2) beforehand to reproject raster1 on the same grid and CRS "
+            "than raster2. Or, if the array does not come from a raster, define one with raster = "
+            "Raster.from_array(array, array_transform, array_crs, array_nodata) then reproject."
+        )
+
         # An error when the shape is wrong
-        with pytest.raises(ValueError, match="Indexing a raster with an array requires the two having the same shape."):
+        with pytest.raises(ValueError, match=re.escape(message_array.format(op_name_index))):
             rst[arr[:-1, :-1]]
-            rst[arr[:-1, :-1]] = 1
+
+        # An error when the georeferencing of the Mask does not match
+        mask.shift(1, 1, inplace=True)
+        with pytest.raises(ValueError, match=re.escape(message_raster.format(op_name_index))):
+            rst[mask]
+
         # A warning when the array type is not boolean
         with pytest.warns(UserWarning, match="Input array was cast to boolean for indexing."):
             rst[arr.astype("uint8")]
             rst[arr.astype("uint8")] = 1
-        # An error when the georeferencing of the Mask does not match
-        mask.shift(1, 1)
-        with pytest.raises(
-            ValueError, match="Indexing a raster with a mask requires the two being on the same georeferenced grid."
-        ):
-            rst[mask]
+
+        # For index assignment
+        # An error when the shape is wrong
+        with pytest.raises(ValueError, match=re.escape(message_array.format(op_name_assign))):
+            rst[arr[:-1, :-1]] = 1
+
+        with pytest.raises(ValueError, match=re.escape(message_raster.format(op_name_assign))):
             rst[mask] = 1
-        # For assignment, an error when the input index is neither a Mask or a boolean ndarray
-        # (indexing attempts to call crop for differently shaped data)
-        with pytest.raises(
-            ValueError,
-            match="Indexing a raster requires a mask of same georeferenced grid, or a boolean array of same shape.",
-        ):
-            rst["lol"] = 1
 
     test_data = [[landsat_b4_path, everest_outlines_path], [aster_dem_path, aster_outlines_path]]
 
@@ -928,48 +1229,44 @@ class TestRaster:
         # -- Test with crop_geom being a list/tuple -- ##
         crop_geom: list[float] = list(r.bounds)
 
-        # Test inplace unloaded cropping conserves the shape
-        r.crop(crop_geom=[crop_geom[0] + r.res[0], crop_geom[1], crop_geom[2], crop_geom[3]])
+        # Test unloaded inplace cropping conserves the shape
+        r.crop(crop_geom=[crop_geom[0] + r.res[0], crop_geom[1], crop_geom[2], crop_geom[3]], inplace=True)
         assert len(r.data.shape) == 2
 
         r = gu.Raster(raster_path)
 
         # Test with same bounds -> should be the same #
         crop_geom2 = [crop_geom[0], crop_geom[1], crop_geom[2], crop_geom[3]]
-        r_cropped = r.crop(crop_geom2, inplace=False)
+        r_cropped = r.crop(crop_geom2)
         assert r_cropped.raster_equal(r)
-
-        # Test with bracket call
-        r_cropped_getitem = r[crop_geom2]
-        assert r_cropped_getitem.raster_equal(r_cropped)
 
         # - Test cropping each side by a random integer of pixels - #
         rand_int = np.random.randint(1, min(r.shape) - 1)
 
         # Left
         crop_geom2 = [crop_geom[0] + rand_int * r.res[0], crop_geom[1], crop_geom[2], crop_geom[3]]
-        r_cropped = r.crop(crop_geom2, inplace=False)
+        r_cropped = r.crop(crop_geom2)
         assert list(r_cropped.bounds) == crop_geom2
         assert np.array_equal(r.data[:, rand_int:].data, r_cropped.data.data, equal_nan=True)
         assert np.array_equal(r.data[:, rand_int:].mask, r_cropped.data.mask)
 
         # Right
         crop_geom2 = [crop_geom[0], crop_geom[1], crop_geom[2] - rand_int * r.res[0], crop_geom[3]]
-        r_cropped = r.crop(crop_geom2, inplace=False)
+        r_cropped = r.crop(crop_geom2)
         assert list(r_cropped.bounds) == crop_geom2
         assert np.array_equal(r.data[:, :-rand_int].data, r_cropped.data.data, equal_nan=True)
         assert np.array_equal(r.data[:, :-rand_int].mask, r_cropped.data.mask)
 
         # Bottom
         crop_geom2 = [crop_geom[0], crop_geom[1] + rand_int * abs(r.res[1]), crop_geom[2], crop_geom[3]]
-        r_cropped = r.crop(crop_geom2, inplace=False)
+        r_cropped = r.crop(crop_geom2)
         assert list(r_cropped.bounds) == crop_geom2
         assert np.array_equal(r.data[:-rand_int, :].data, r_cropped.data.data, equal_nan=True)
         assert np.array_equal(r.data[:-rand_int, :].mask, r_cropped.data.mask)
 
         # Top
         crop_geom2 = [crop_geom[0], crop_geom[1], crop_geom[2], crop_geom[3] - rand_int * abs(r.res[1])]
-        r_cropped = r.crop(crop_geom2, inplace=False)
+        r_cropped = r.crop(crop_geom2)
         assert list(r_cropped.bounds) == crop_geom2
         assert np.array_equal(r.data[rand_int:, :].data, r_cropped.data, equal_nan=True)
         assert np.array_equal(r.data[rand_int:, :].mask, r_cropped.data.mask)
@@ -981,34 +1278,29 @@ class TestRaster:
             crop_geom[2],
             crop_geom[3] - rand_int * r.res[0],
         )
-        r_cropped = r.crop(crop_geom3, inplace=False)
+        r_cropped = r.crop(crop_geom3)
         assert list(r_cropped.bounds) == list(crop_geom3)
         assert np.array_equal(r.data[rand_int:, :].data, r_cropped.data.data, equal_nan=True)
         assert np.array_equal(r.data[rand_int:, :].mask, r_cropped.data.mask)
 
         # -- Test with crop_geom being a Raster -- #
-        r_cropped2 = r.crop(r_cropped, inplace=False)
+        r_cropped2 = r.crop(r_cropped)
         assert r_cropped2.raster_equal(r_cropped)
 
         # Check that bound reprojection is done automatically if the CRS differ
         with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "ignore", category=UserWarning, message="For reprojection, dst_nodata must be set.*"
-            )
-            r_cropped_reproj = r_cropped.reproject(dst_crs=3857)
-        r_cropped3 = r.crop(r_cropped_reproj, inplace=False)
+            warnings.filterwarnings("ignore", category=UserWarning, message="For reprojection, nodata must be set.*")
+
+            r_cropped_reproj = r_cropped.reproject(crs=3857)
+            r_cropped3 = r.crop(r_cropped_reproj)
 
         # Original CRS bounds can be deformed during transformation, but result should be equivalent to this
-        r_cropped4 = r.crop(crop_geom=r_cropped_reproj.get_bounds_projected(out_crs=r.crs), inplace=False)
+        r_cropped4 = r.crop(crop_geom=r_cropped_reproj.get_bounds_projected(out_crs=r.crs))
         assert r_cropped3.raster_equal(r_cropped4)
 
-        # Check with bracket call
-        r_cropped5 = r[r_cropped_reproj]
-        assert r_cropped4.raster_equal(r_cropped5)
-
-        # -- Test with inplace=True (Default) -- #
+        # -- Test with inplace=True -- #
         r_copy = r.copy()
-        r_copy.crop(r_cropped)
+        r_copy.crop(r_cropped, inplace=True)
         assert r_copy.raster_equal(r_cropped)
 
         # - Test cropping each side with a non integer pixel, mode='match_pixel' - #
@@ -1016,28 +1308,28 @@ class TestRaster:
 
         # left
         crop_geom2 = [crop_geom[0] + rand_float * r.res[0], crop_geom[1], crop_geom[2], crop_geom[3]]
-        r_cropped = r.crop(crop_geom2, inplace=False)
+        r_cropped = r.crop(crop_geom2)
         assert r.shape[1] - (r_cropped.bounds.right - r_cropped.bounds.left) / r.res[0] == int(rand_float)
         assert np.array_equal(r.data[:, int(rand_float) :].data, r_cropped.data.data, equal_nan=True)
         assert np.array_equal(r.data[:, int(rand_float) :].mask, r_cropped.data.mask)
 
         # right
         crop_geom2 = [crop_geom[0], crop_geom[1], crop_geom[2] - rand_float * r.res[0], crop_geom[3]]
-        r_cropped = r.crop(crop_geom2, inplace=False)
+        r_cropped = r.crop(crop_geom2)
         assert r.shape[1] - (r_cropped.bounds.right - r_cropped.bounds.left) / r.res[0] == int(rand_float)
         assert np.array_equal(r.data[:, : -int(rand_float)].data, r_cropped.data.data, equal_nan=True)
         assert np.array_equal(r.data[:, : -int(rand_float)].mask, r_cropped.data.mask)
 
         # bottom
         crop_geom2 = [crop_geom[0], crop_geom[1] + rand_float * abs(r.res[1]), crop_geom[2], crop_geom[3]]
-        r_cropped = r.crop(crop_geom2, inplace=False)
+        r_cropped = r.crop(crop_geom2)
         assert r.shape[0] - (r_cropped.bounds.top - r_cropped.bounds.bottom) / r.res[1] == int(rand_float)
         assert np.array_equal(r.data[: -int(rand_float), :].data, r_cropped.data.data, equal_nan=True)
         assert np.array_equal(r.data[: -int(rand_float), :].mask, r_cropped.data.mask)
 
         # top
         crop_geom2 = [crop_geom[0], crop_geom[1], crop_geom[2], crop_geom[3] - rand_float * abs(r.res[1])]
-        r_cropped = r.crop(crop_geom2, inplace=False)
+        r_cropped = r.crop(crop_geom2)
         assert r.shape[0] - (r_cropped.bounds.top - r_cropped.bounds.bottom) / r.res[1] == int(rand_float)
         assert np.array_equal(r.data[int(rand_float) :, :].data, r_cropped.data.data, equal_nan=True)
         assert np.array_equal(r.data[int(rand_float) :, :].mask, r_cropped.data.mask)
@@ -1053,12 +1345,10 @@ class TestRaster:
             crop_geom[3] - rand_float * abs(r.res[1]),
         ]
 
-        # Filter warning about dst_nodata not set in reprojection (because match_extent triggers reproject)
+        # Filter warning about nodata not set in reprojection (because match_extent triggers reproject)
         with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "ignore", category=UserWarning, message="For reprojection, dst_nodata must be set.*"
-            )
-            r_cropped = r.crop(crop_geom2, inplace=False, mode="match_extent")
+            warnings.filterwarnings("ignore", category=UserWarning, message="For reprojection, nodata must be set.*")
+            r_cropped = r.crop(crop_geom2, mode="match_extent")
 
         assert list(r_cropped.bounds) == crop_geom2
         # The change in resolution should be less than what would occur with +/- 1 pixel
@@ -1066,12 +1356,10 @@ class TestRaster:
             abs(np.array(r.res) - np.array(r_cropped.res)) < np.array(r.res) / np.array(r_cropped.shape)[::-1]
         )
 
-        # Filter warning about dst_nodata not set in reprojection (because match_extent triggers reproject)
+        # Filter warning about nodata not set in reprojection (because match_extent triggers reproject)
         with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "ignore", category=UserWarning, message="For reprojection, dst_nodata must be set.*"
-            )
-            r_cropped2 = r.crop(r_cropped, inplace=False, mode="match_extent")
+            warnings.filterwarnings("ignore", category=UserWarning, message="For reprojection, nodata must be set.*")
+            r_cropped2 = r.crop(r_cropped, mode="match_extent")
         assert r_cropped2.raster_equal(r_cropped)
 
         # -- Test with crop_geom being a Vector -- #
@@ -1079,7 +1367,7 @@ class TestRaster:
 
         # First, we reproject manually the outline
         outlines_reproj = gu.Vector(outlines.ds.to_crs(r.crs))
-        r_cropped = r.crop(outlines_reproj, inplace=False)
+        r_cropped = r.crop(outlines_reproj)
 
         # Calculate intersection of the two bounding boxes and make sure crop has same bounds
         win_outlines = rio.windows.from_bounds(*outlines_reproj.bounds, transform=r.transform)
@@ -1089,12 +1377,58 @@ class TestRaster:
         assert list(r_cropped.bounds) == list(new_bounds)
 
         # Second, we check that bound reprojection is done automatically if the CRS differ
-        r_cropped2 = r.crop(outlines, inplace=False)
+        r_cropped2 = r.crop(outlines)
         assert list(r_cropped2.bounds) == list(new_bounds)
 
-        # Finally, we check with a bracket call
-        r_cropped3 = r[outlines]
-        assert list(r_cropped3.bounds) == list(new_bounds)
+        # -- Test crop works as expected even if transform has been modified, e.g. through downsampling -- #
+        # Test that with downsampling, cropping to same bounds result in same raster
+        r = gu.Raster(raster_path, downsample=5)
+        r_test = r.crop(r.bounds)
+        assert r_test.raster_equal(r)
+
+        # - Test that cropping yields the same results whether data is loaded or not -
+        # With integer cropping (left)
+        rand_int = np.random.randint(1, min(r.shape) - 1)
+        crop_geom2 = [crop_geom[0] + rand_int * r.res[0], crop_geom[1], crop_geom[2], crop_geom[3]]
+        r = gu.Raster(raster_path, downsample=5, load_data=False)
+        assert not r.is_loaded
+        r_crop_unloaded = r.crop(crop_geom2)
+        r.load()
+        r_crop_loaded = r.crop(crop_geom2)
+        # TODO: the following condition should be met once issue #447 is solved
+        # assert r_crop_unloaded.raster_equal(r_crop_loaded)
+        assert r_crop_unloaded.shape == r_crop_loaded.shape
+        assert r_crop_unloaded.transform == r_crop_loaded.transform
+
+        # With a float number of pixels added to the right, mode 'match_pixel'
+        rand_float = np.random.randint(1, min(r.shape) - 1) + 0.25
+        crop_geom2 = [crop_geom[0], crop_geom[1], crop_geom[2] + rand_float * r.res[0], crop_geom[3]]
+        r = gu.Raster(raster_path, downsample=5, load_data=False)
+        assert not r.is_loaded
+        r_crop_unloaded = r.crop(crop_geom2, mode="match_pixel")
+        r.load()
+        r_crop_loaded = r.crop(crop_geom2, mode="match_pixel")
+        # TODO: the following condition should be met once issue #447 is solved
+        # assert r_crop_unloaded.raster_equal(r_crop_loaded)
+        assert r_crop_unloaded.shape == r_crop_loaded.shape
+        assert r_crop_unloaded.transform == r_crop_loaded.transform
+
+        # - Check related to pixel interpretation -
+
+        # Check warning for a different area_or_point for the match-reference geometry works
+        r.set_area_or_point("Area", shift_area_or_point=False)
+        r2 = r.copy()
+        r2.set_area_or_point("Point", shift_area_or_point=False)
+
+        with pytest.warns(UserWarning, match='One raster has a pixel interpretation "Area" and the other "Point".*'):
+            r.crop(r2)
+
+        # Check that cropping preserves the interpretation
+        crop_geom = [crop_geom[0] + r.res[0], crop_geom[1], crop_geom[2], crop_geom[3]]
+        r_crop = r.crop(crop_geom)
+        assert r_crop.area_or_point == "Area"
+        r2_crop = r2.crop(crop_geom)
+        assert r2_crop.area_or_point == "Point"
 
     @pytest.mark.parametrize("example", [landsat_b4_path, aster_dem_path, landsat_rgb_path])  # type: ignore
     def test_shift(self, example: str) -> None:
@@ -1102,9 +1436,19 @@ class TestRaster:
 
         r = gu.Raster(example)
 
+        # Get original transform
         orig_transform = r.transform
         orig_bounds = r.bounds
-        r.shift(xoff=1, yoff=1)
+
+        # Shift raster by georeferenced units (default)
+        # Check the default behaviour is not inplace
+        r_notinplace = r.shift(xoff=1, yoff=1)
+        assert isinstance(r_notinplace, gu.Raster)
+
+        # Check inplace
+        r.shift(xoff=1, yoff=1, inplace=True)
+        # Both shifts should have yielded the same transform
+        assert r.transform == r_notinplace.transform
 
         # Only bounds should change
         assert orig_transform.c + 1 == r.transform.c
@@ -1116,6 +1460,27 @@ class TestRaster:
         assert orig_bounds.right + 1 == r.bounds.right
         assert orig_bounds.bottom + 1 == r.bounds.bottom
         assert orig_bounds.top + 1 == r.bounds.top
+
+        # Shift raster using pixel units
+        orig_transform = r.transform
+        orig_bounds = r.bounds
+        orig_res = r.res
+        r.shift(xoff=1, yoff=1, distance_unit="pixel", inplace=True)
+
+        # Only bounds should change
+        assert orig_transform.c + 1 * orig_res[0] == r.transform.c
+        assert orig_transform.f + 1 * orig_res[1] == r.transform.f
+        for attr in ["a", "b", "d", "e"]:
+            assert getattr(orig_transform, attr) == getattr(r.transform, attr)
+
+        assert orig_bounds.left + 1 * orig_res[0] == r.bounds.left
+        assert orig_bounds.right + 1 * orig_res[0] == r.bounds.right
+        assert orig_bounds.bottom + 1 * orig_res[1] == r.bounds.bottom
+        assert orig_bounds.top + 1 * orig_res[1] == r.bounds.top
+
+        # Check that an error is raised for a wrong distance_unit
+        with pytest.raises(ValueError, match="Argument 'distance_unit' should be either 'pixel' or 'georeferenced'."):
+            r.shift(xoff=1, yoff=1, distance_unit="wrong_value")  # type: ignore
 
     @pytest.mark.parametrize("example", [landsat_b4_path, aster_dem_path])  # type: ignore
     def test_reproject(self, example: str) -> None:
@@ -1139,30 +1504,175 @@ class TestRaster:
         r_nodata.data[rand_indices] = default_nodata
         assert np.count_nonzero(r_nodata.data == default_nodata) > 0
 
-        # 1 - if no src_nodata is set and masked values exist, raises an error
-        with pytest.raises(ValueError, match="No nodata set, use `src_nodata`"):
-            _ = r_nodata.reproject(dst_res=r_nodata.res[0] / 2, dst_nodata=0)
+        # 1 - if no force_source_nodata is set and masked values exist, raises an error
+        with pytest.raises(
+            ValueError,
+            match=re.escape(
+                "No nodata set, set one for the raster with self.set_nodata() or use a "
+                "temporary one with `force_source_nodata`."
+            ),
+        ):
+            _ = r_nodata.reproject(res=r_nodata.res[0] / 2, nodata=0)
 
-        # 2 - if no dst_nodata is set and default value conflicts with existing value, a warning is raised
+        # 2 - if no nodata is set and default value conflicts with existing value, a warning is raised
         with pytest.warns(
             UserWarning,
             match=re.escape(
-                f"For reprojection, dst_nodata must be set. Default chosen value "
+                f"For reprojection, nodata must be set. Default chosen value "
                 f"{_default_nodata(r_nodata.dtypes[0])} exists in self.data. This may have unexpected "
                 f"consequences. Consider setting a different nodata with self.set_nodata()."
             ),
         ):
-            _ = r_nodata.reproject(dst_res=r_nodata.res[0] / 2, src_nodata=default_nodata)
+            r_test = r_nodata.reproject(res=r_nodata.res[0] / 2, force_source_nodata=default_nodata)
+        assert r_test.nodata == default_nodata
 
         # 3 - if default nodata does not conflict, should not raise a warning
         r_nodata.data[r_nodata.data == default_nodata] = 3
-        _ = r_nodata.reproject(dst_res=r_nodata.res[0] / 2, src_nodata=default_nodata)
+        r_test = r_nodata.reproject(res=r_nodata.res[0] / 2, force_source_nodata=default_nodata)
+        assert r_test.nodata == default_nodata
 
-        # -- Additional tests -- #
+        # -- Test setting each combination of georeferences bounds, res and size -- #
 
         # specific for the landsat test case, default nodata 255 cannot be used (see above), so use 0
         if r.nodata is None:
             r.set_nodata(0)
+
+        # - Test size - this should modify the shape, and hence resolution, but not the bounds -
+        out_size = (r.shape[1] // 2, r.shape[0] // 2)  # Outsize is (ncol, nrow)
+        r_test = r.reproject(grid_size=out_size)
+        assert r_test.shape == (out_size[1], out_size[0])
+        assert r_test.res != r.res
+        assert r_test.bounds == r.bounds
+
+        # - Test bounds -
+        # if bounds is a multiple of res, outptut res should be preserved
+        bounds = np.copy(r.bounds)
+        dst_bounds = rio.coords.BoundingBox(
+            left=bounds[0], bottom=bounds[1] + r.res[0], right=bounds[2] - 2 * r.res[1], top=bounds[3]
+        )
+        r_test = r.reproject(bounds=dst_bounds)
+        assert r_test.bounds == dst_bounds
+        assert r_test.res == r.res
+
+        # Create bounds with 1/2 and 1/3 pixel extra on the right/bottom.
+        bounds = np.copy(r.bounds)
+        dst_bounds = rio.coords.BoundingBox(
+            left=bounds[0], bottom=bounds[1] - r.res[0] / 3.0, right=bounds[2] + r.res[1] / 2.0, top=bounds[3]
+        )
+
+        # If bounds are not a multiple of res, the latter will be updated accordingly
+        r_test = r.reproject(bounds=dst_bounds)
+        assert r_test.bounds == dst_bounds
+        assert r_test.res != r.res
+
+        # - Test size and bounds -
+        r_test = r.reproject(grid_size=out_size, bounds=dst_bounds)
+        assert r_test.shape == (out_size[1], out_size[0])
+        assert r_test.bounds == dst_bounds
+
+        # - Test res -
+        # Using a single value, output res will be enforced, resolution will be different
+        res_single = r.res[0] * 2
+        r_test = r.reproject(res=res_single)
+        assert r_test.res == (res_single, res_single)
+        assert r_test.shape != r.shape
+
+        # Using a tuple
+        res_tuple = (r.res[0] * 0.5, r.res[1] * 4)
+        r_test = r.reproject(res=res_tuple)
+        assert r_test.res == res_tuple
+        assert r_test.shape != r.shape
+
+        # - Test res and bounds -
+        # Bounds will be enforced for upper-left pixel, but adjusted by up to one pixel for the lower right bound.
+        # for single res value
+        r_test = r.reproject(bounds=dst_bounds, res=res_single)
+        assert r_test.res == (res_single, res_single)
+        assert r_test.bounds.left == dst_bounds.left
+        assert r_test.bounds.top == dst_bounds.top
+        assert np.abs(r_test.bounds.right - dst_bounds.right) < res_single
+        assert np.abs(r_test.bounds.bottom - dst_bounds.bottom) < res_single
+
+        # For tuple
+        r_test = r.reproject(bounds=dst_bounds, res=res_tuple)
+        assert r_test.res == res_tuple
+        assert r_test.bounds.left == dst_bounds.left
+        assert r_test.bounds.top == dst_bounds.top
+        assert np.abs(r_test.bounds.right - dst_bounds.right) < res_tuple[0]
+        assert np.abs(r_test.bounds.bottom - dst_bounds.bottom) < res_tuple[1]
+
+        # - Test crs -
+        out_crs = rio.crs.CRS.from_epsg(4326)
+        r_test = r.reproject(crs=out_crs)
+        assert r_test.crs.to_epsg() == 4326
+
+        # -- Additional tests --
+        # First, make sure dst_bounds extend beyond current extent to create nodata
+        dst_bounds = rio.coords.BoundingBox(
+            left=bounds[0], bottom=bounds[1] - r.res[0], right=bounds[2] + 2 * r.res[1], top=bounds[3]
+        )
+        r_test = r.reproject(bounds=dst_bounds)
+        assert np.count_nonzero(r_test.data.mask) > 0
+
+        # If nodata falls outside the original image range, check range is preserved (with nearest interpolation)
+        r_float = r.astype("float32")  # type: ignore
+        if (r_float.nodata < np.min(r_float)) or (r_float.nodata > np.max(r_float)):
+            r_test = r_float.reproject(bounds=dst_bounds, resampling="nearest")
+            assert r_test.nodata == r_float.nodata
+            assert np.count_nonzero(r_test.data.data == r_test.nodata) > 0  # Some values should be set to nodata
+            assert np.min(r_test.data) == np.min(r_float.data)  # But min and max should not be affected
+            assert np.max(r_test.data) == np.max(r_float.data)
+
+        # Check that nodata works as expected
+        r_test = r_float.reproject(bounds=dst_bounds, nodata=9999)
+        assert r_test.nodata == 9999
+        assert np.count_nonzero(r_test.data.data == r_test.nodata) > 0
+
+        # Test that reproject works the same whether data is already loaded or not
+        assert r.is_loaded
+        r_test1 = r.reproject(crs=out_crs, nodata=0)
+        r_unload = gu.Raster(example, load_data=False)
+        assert not r_unload.is_loaded
+        r_test2 = r_unload.reproject(crs=out_crs, nodata=0)
+        assert r_test1.raster_equal(r_test2)
+
+        # Test that reproject does not fail with resolution as np.integer or np.float types, single value or tuple
+        astype_funcs = [int, np.int32, float, np.float64]
+        for astype_func in astype_funcs:
+            r.reproject(res=astype_func(20.5), nodata=0)
+        for i in range(len(astype_funcs)):
+            for j in range(len(astype_funcs)):
+                r.reproject(res=(astype_funcs[i](20.5), astype_funcs[j](10.5)), nodata=0)
+
+        # Test that reprojection works for several bands
+        for n in [2, 3, 4]:
+            img1 = gu.Raster.from_array(
+                np.ones((n, 500, 500), dtype="uint8"), transform=rio.transform.from_origin(0, 500, 1, 1), crs=4326
+            )
+
+            img2 = gu.Raster.from_array(
+                np.ones((n, 500, 500), dtype="uint8"), transform=rio.transform.from_origin(50, 500, 1, 1), crs=4326
+            )
+
+            out_img = img2.reproject(img1)
+            assert np.shape(out_img.data) == (n, 500, 500)
+            assert (out_img.count, *out_img.shape) == (n, 500, 500)
+
+        # Test that the rounding of resolution is correct for large decimal numbers
+        # (we take an example that used to fail, see issue #354 and #357)
+        data = np.ones((4759, 2453))
+        transform = rio.transform.Affine(
+            24.12423878332849, 0.0, 238286.29553975424, 0.0, -24.12423878332849, 6995453.456051373
+        )
+        crs = rio.CRS.from_epsg(32633)
+        nodata = -9999.0
+        rst = gu.Raster.from_array(data=data, transform=transform, crs=crs, nodata=nodata)
+
+        rst_reproj = rst.reproject(bounds=rst.bounds, res=(20.0, 20.0))
+        # This used to be 19.999999999999999 due to floating point precision
+        assert rst_reproj.res == (20.0, 20.0)
+
+        # -- Test match reference functionalities --
 
         # - Create 2 artificial rasters -
         # for r2b, bounds are cropped to the upper left by an integer number of pixels (i.e. crop)
@@ -1179,7 +1689,7 @@ class TestRaster:
 
         # Create a raster with different resolution
         dst_res = r.res[0] * 2 / 3
-        r2 = r2b.reproject(dst_res=dst_res)
+        r2 = r2b.reproject(res=dst_res)
         assert r2.res == (dst_res, dst_res)
 
         # Assert the initial rasters are different
@@ -1189,7 +1699,7 @@ class TestRaster:
         assert r.shape != r2.shape
         assert r.res != r2.res
 
-        # Test reprojecting with dst_ref=r2b (i.e. crop) -> output should have same shape, bounds and data, i.e. be the
+        # Test reprojecting with ref=r2b (i.e. crop) -> output should have same shape, bounds and data, i.e. be the
         # same object
         r3 = r.reproject(r2b)
         assert r3.bounds == r2b.bounds
@@ -1201,17 +1711,17 @@ class TestRaster:
 
         if DO_PLOT:
             fig1, ax1 = plt.subplots()
-            r.show(ax=ax1, title="Raster 1")
+            r.plot(ax=ax1, title="Raster 1")
 
             fig2, ax2 = plt.subplots()
-            r2b.show(ax=ax2, title="Raster 2")
+            r2b.plot(ax=ax2, title="Raster 2")
 
             fig3, ax3 = plt.subplots()
-            r3.show(ax=ax3, title="Raster 1 reprojected to Raster 2")
+            r3.plot(ax=ax3, title="Raster 1 reprojected to Raster 2")
 
             plt.show()
 
-        # Test reprojecting with dst_ref=r2 -> output should have same shape, bounds and transform
+        # Test reprojecting with ref=r2 -> output should have same shape, bounds and transform
         # Data should be slightly different due to difference in input resolution
         r3 = r.reproject(r2)
         assert r3.bounds == r2.bounds
@@ -1222,17 +1732,17 @@ class TestRaster:
 
         if DO_PLOT:
             fig1, ax1 = plt.subplots()
-            r.show(ax=ax1, title="Raster 1")
+            r.plot(ax=ax1, title="Raster 1")
 
             fig2, ax2 = plt.subplots()
-            r2.show(ax=ax2, title="Raster 2")
+            r2.plot(ax=ax2, title="Raster 2")
 
             fig3, ax3 = plt.subplots()
-            r3.show(ax=ax3, title="Raster 1 reprojected to Raster 2")
+            r3.plot(ax=ax3, title="Raster 1 reprojected to Raster 2")
 
             plt.show()
 
-        # - Check that if mask is modified afterwards, it is taken into account during reproject - #
+        # -- Check that if mask is modified afterwards, it is taken into account during reproject -- #
         # Create a raster with (additional) random gaps
         r_gaps = r.copy()
         nsamples = 200
@@ -1242,11 +1752,11 @@ class TestRaster:
 
         # reproject raster, and reproject mask. Check that both have same number of masked pixels
         # TODO: should test other resampling algo
-        r_gaps_reproj = r_gaps.reproject(dst_res=dst_res, resampling="nearest")
+        r_gaps_reproj = r_gaps.reproject(res=dst_res, resampling="nearest")
         mask = gu.Raster.from_array(
             r_gaps.data.mask.astype("uint8"), crs=r_gaps.crs, transform=r_gaps.transform, nodata=None
         )
-        mask_reproj = mask.reproject(dst_res=dst_res, dst_nodata=255, resampling="nearest")
+        mask_reproj = mask.reproject(res=dst_res, nodata=255, resampling="nearest")
         # Final masked pixels are those originally masked (=1) and the values masked during reproject, e.g. edges
         tot_masked_true = np.count_nonzero(mask_reproj.data.mask) + np.count_nonzero(mask_reproj.data == 1)
         assert np.count_nonzero(r_gaps_reproj.data.mask) == tot_masked_true
@@ -1259,116 +1769,55 @@ class TestRaster:
         r3 = r_nodata.reproject(r2)
         assert r_nodata.nodata == r3.nodata
 
-        # Test dst_size - this should modify the shape, and hence resolution, but not the bounds
-        out_size = (r.shape[1] // 2, r.shape[0] // 2)  # Outsize is (ncol, nrow)
-        r3 = r.reproject(dst_size=out_size)
-        assert r3.shape == (out_size[1], out_size[0])
-        assert r3.res != r.res
-        assert r3.bounds == r.bounds
+        # -- Check inplace behaviour works -- #
 
-        # Test dst_bounds
-        # if bounds is a multiple of res, outptut res should be preserved
-        bounds = np.copy(r.bounds)
-        dst_bounds = rio.coords.BoundingBox(
-            left=bounds[0], bottom=bounds[1] + r.res[0], right=bounds[2] - 2 * r.res[1], top=bounds[3]
-        )
-        r3 = r.reproject(dst_bounds=dst_bounds)
-        assert r3.bounds == dst_bounds
-        assert r3.res == r.res
+        # Check when transform is updated (via res)
+        r_tmp_res = r.copy()
+        r_res = r_tmp_res.reproject(res=r.res[0] / 2)
+        r_tmp_res.reproject(res=r.res[0] / 2, inplace=True)
 
-        # Create bounds with 1/2 and 1/3 pixel extra on the right/bottom.
-        bounds = np.copy(r.bounds)
-        dst_bounds = rio.coords.BoundingBox(
-            left=bounds[0], bottom=bounds[1] - r.res[0] / 3.0, right=bounds[2] + r.res[1] / 2.0, top=bounds[3]
-        )
+        assert r_res.raster_equal(r_tmp_res)
 
-        # If bounds are not a multiple of res, the latter will be updated accordingly
-        r3 = r.reproject(dst_bounds=dst_bounds)
-        assert r3.bounds == dst_bounds
-        assert r3.res != r.res
+        # Check when CRS is updated
+        r_tmp_crs = r.copy()
+        r_crs = r_tmp_crs.reproject(crs=out_crs)
+        r_tmp_crs.reproject(crs=out_crs, inplace=True)
 
-        # Assert that when reprojection creates nodata (voids), if no nodata is set, a default value is set
-        r3 = r.reproject(dst_bounds=dst_bounds)
-        if r.nodata is None:
-            assert r3.nodata == _default_nodata(r.dtypes[0])
+        assert r_crs.raster_equal(r_tmp_crs)
 
-        # Particularly crucial if nodata falls outside the original image range
-        # -> check range is preserved (with nearest interpolation)
-        r_float = r.astype("float32")  # type: ignore
-        if r_float.nodata is None:
-            r3 = r_float.reproject(dst_bounds=dst_bounds, resampling="nearest")
-            assert r3.nodata == -99999
-            assert np.min(r3.data.data) == r3.nodata
-            assert np.min(r3.data) == np.min(r_float.data)
-            assert np.max(r3.data) == np.max(r_float.data)
+        # -- Test additional errors raised for argument combinations -- #
 
-        # Check that dst_nodata works as expected
-        r3 = r_float.reproject(dst_bounds=dst_bounds, dst_nodata=9999)
-        assert r3.nodata == 9999
-        assert np.max(r3.data.data) == r3.nodata
+        # If both ref and crs are set
+        with pytest.raises(ValueError, match=re.escape("Either of `ref` or `crs` must be set. Not both.")):
+            _ = r.reproject(ref=r2, crs=r.crs)
 
-        # If dst_res is set, the resolution will be enforced
-        # Bounds will be enforced for upper-left pixel, but adjusted by up to one pixel for the lower right bound.
-        r3 = r.reproject(dst_bounds=dst_bounds, dst_res=r.res)
-        assert r3.res == r.res
-        assert r3.bounds.left == dst_bounds.left
-        assert r3.bounds.top == dst_bounds.top
-        assert np.abs(r3.bounds.right - dst_bounds.right) < r3.res[1]
-        assert np.abs(r3.bounds.bottom - dst_bounds.bottom) < r3.res[0]
+        # Size and res are mutually exclusive
+        with pytest.raises(ValueError, match=re.escape("size and res both specified. Specify only one.")):
+            _ = r.reproject(grid_size=(10, 10), res=50)
 
-        # Test dst_crs
-        out_crs = rio.crs.CRS.from_epsg(4326)
-        r3 = r.reproject(dst_crs=out_crs)
-        assert r3.crs.to_epsg() == 4326
+        # If wrong type for `ref`
+        with pytest.raises(
+            TypeError, match=re.escape("Type of ref not understood, must be path to file (str), Raster.")
+        ):
+            _ = r.reproject(ref=3)
 
-        # Test that reproject works from self.ds and yield same result as from in-memory array
-        # TO DO: fix issue that default behavior sets nodata to 255 and masks valid values
-        r3 = r.reproject(dst_crs=out_crs, dst_nodata=0)
-        r = gu.Raster(example, load_data=False)
-        r4 = r.reproject(dst_crs=out_crs, dst_nodata=0)
-        assert r3.raster_equal(r4)
+        # If input reference is string and file and does not exist
+        with pytest.raises(ValueError, match=re.escape("Reference raster does not exist.")):
+            _ = r.reproject(ref="no_file.tif")
 
-        # Test that reproject does not fail with resolution as np.integer or np.float types, single value or tuple
-        astype_funcs = [int, np.int32, float, np.float64]
-        for astype_func in astype_funcs:
-            r.reproject(dst_res=astype_func(20.5), dst_nodata=0)
-        for i in range(len(astype_funcs)):
-            for j in range(len(astype_funcs)):
-                r.reproject(dst_res=(astype_funcs[i](20.5), astype_funcs[j](10.5)), dst_nodata=0)
+        # -- Check warning for area_or_point works -- #
+        r.set_area_or_point("Area", shift_area_or_point=False)
+        r2 = r.copy()
+        r2.set_area_or_point("Point", shift_area_or_point=False)
 
-        # Test that reprojection works for several bands
-        for n in [2, 3, 4]:
-            img1 = gu.Raster.from_array(
-                np.ones((n, 500, 500), dtype="uint8"), transform=rio.transform.from_origin(0, 500, 1, 1), crs=4326
-            )
+        with pytest.warns(UserWarning, match='One raster has a pixel interpretation "Area" and the other "Point".*'):
+            r.reproject(r2)
 
-            img2 = gu.Raster.from_array(
-                np.ones((n, 500, 500), dtype="uint8"), transform=rio.transform.from_origin(50, 500, 1, 1), crs=4326
-            )
-
-            out_img = img2.reproject(img1)
-            assert np.shape(out_img.data) == (n, 500, 500)
-            assert (out_img.count, *out_img.shape) == (n, 500, 500)
-
-        # Test that the rounding of resolution is correct for large rasters
-        # (we take an example that used to fail, see issue #354)
-        data = np.zeros(shape=(5741, 2959), dtype="uint8")
-        transform = rio.transform.Affine(20.0, 0.0, 238286.29553975424, 0.0, -20.0, 6995453.456051373)
-        crs = rio.CRS.from_epsg(32633)
-        nodata = -9999.0
-        rst = gu.Raster.from_array(data=data, transform=transform, crs=crs, nodata=nodata)
-
-        # This large grid geotransform is taken from https://cdn.proj.org/us_nga_egm08_25.tif
-        data2 = np.zeros(shape=(4321, 8640), dtype="uint8")
-        transform2 = rio.transform.Affine(
-            0.041666666666666664, 0.0, -180.02083333333334, 0.0, -0.041666666666666664, 90.02083333333333
-        )
-        crs2 = rio.CRS.from_epsg(4979)
-        rst2 = gu.Raster.from_array(data=data2, transform=transform2, crs=crs2, nodata=None)
-
-        rst2_reproj = rst2.reproject(rst)
-        # This used to be 19.999999999999999 due to floating point precision
-        assert rst2_reproj.res == (20.0, 20.0)
+        # Check that reprojecting preserves interpretation
+        r_reproj = r.reproject(res=r.res[0] * 2)
+        assert r_reproj.area_or_point == "Area"
+        r2_reproj = r2.reproject(res=r2.res[0] * 2)
+        assert r2_reproj.area_or_point == "Point"
 
     @pytest.mark.parametrize("example", [landsat_b4_path, aster_dem_path])  # type: ignore
     def test_intersection(self, example: list[str]) -> None:
@@ -1494,40 +1943,72 @@ class TestRaster:
             assert intersection == (0.0, 0.0, 0.0, 0.0)
 
     @pytest.mark.parametrize("example", [landsat_b4_path, aster_dem_path, landsat_rgb_path])  # type: ignore
-    def test_ij2xy_xy2ij(self, example: str) -> None:
-        """Test ij2xy and that the two functions are reversible."""
+    def test_ij2xy(self, example: str) -> None:
+        """Test the outputs of ij2xy and that the function is reversible with xy2ij."""
 
         # Open raster
         rst = gu.Raster(example)
         xmin, ymin, xmax, ymax = rst.bounds
 
-        # Check ij2xy manually for the four corners
+        # Check ij2xy manually for the four corners and center
+        # With "force_offset", no considerations of pixel interpolation
 
         # With offset="center", should be pixel center
         xmin_center = xmin + rst.res[0] / 2
         ymin_center = ymin + rst.res[1] / 2
         xmax_center = xmax - rst.res[0] / 2
         ymax_center = ymax - rst.res[1] / 2
-        assert rst.ij2xy([0], [0], offset="center") == ([xmin_center], [ymax_center])
-        assert rst.ij2xy([rst.shape[0] - 1], [0], offset="center") == ([xmin_center], [ymin_center])
-        assert rst.ij2xy([0], [rst.shape[1] - 1], offset="center") == ([xmax_center], [ymax_center])
-        assert rst.ij2xy([rst.shape[0] - 1], [rst.shape[1] - 1], offset="center") == ([xmax_center], [ymin_center])
+        assert rst.ij2xy([0], [0], force_offset="center") == ([xmin_center], [ymax_center])
+        assert rst.ij2xy([rst.shape[0] - 1], [0], force_offset="center") == ([xmin_center], [ymin_center])
+        assert rst.ij2xy([0], [rst.shape[1] - 1], force_offset="center") == ([xmax_center], [ymax_center])
+        assert rst.ij2xy([rst.shape[0] - 1], [rst.shape[1] - 1], force_offset="center") == (
+            [xmax_center],
+            [ymin_center],
+        )
 
-        # With offset="ll", lower-left
-        xmin_center = xmin
-        ymin_center = ymin
-        xmax_center = xmax - rst.res[0]
-        ymax_center = ymax - rst.res[1]
-        assert rst.ij2xy([0], [0], offset="ll") == ([xmin_center], [ymax_center])
-        assert rst.ij2xy([rst.shape[0] - 1], [0], offset="ll") == ([xmin_center], [ymin_center])
-        assert rst.ij2xy([0], [rst.shape[1] - 1], offset="ll") == ([xmax_center], [ymax_center])
-        assert rst.ij2xy([rst.shape[0] - 1], [rst.shape[1] - 1], offset="ll") == ([xmax_center], [ymin_center])
+        # Same checks for offset="ll", "ul", "ur", "lr
+        lims_ll = [xmin, ymin, xmax - rst.res[0], ymax - rst.res[1]]
+        lims_ul = [xmin, ymin + rst.res[1], xmax - rst.res[0], ymax]
+        lims_lr = [xmin + rst.res[0], ymin, xmax, ymax - rst.res[1]]
+        lims_ur = [xmin + rst.res[0], ymin + rst.res[1], xmax, ymax]
+        offsets = ["ll", "ul", "lr", "ur"]
+        list_lims = [lims_ll, lims_ul, lims_lr, lims_ur]
+        for i in range(len(list_lims)):
+            offset = offsets[i]
+            lim = list_lims[i]
+            assert rst.ij2xy([0], [0], force_offset=offset) == ([lim[0]], [lim[3]])
+            assert rst.ij2xy([rst.shape[0] - 1], [0], force_offset=offset) == ([lim[0]], [lim[1]])
+            assert rst.ij2xy([0], [rst.shape[1] - 1], force_offset=offset) == ([lim[2]], [lim[3]])
+            assert rst.ij2xy([rst.shape[0] - 1], [rst.shape[1] - 1], force_offset=offset) == ([lim[2]], [lim[1]])
+
+        # Check that default coordinate is upper-left
+
+        # With shift from pixel interpretation, coordinates will be half a pixel back for "Point"
+        if rst.area_or_point is not None and rst.area_or_point == "Point" and gu.config["shift_area_or_point"]:
+            # Shift is backward in X, forward in Y
+            lims_ul[0] = lims_ul[0] - 0.5 * rst.res[0]
+            lims_ul[1] = lims_ul[1] + 0.5 * rst.res[1]
+            lims_ul[2] = lims_ul[2] - 0.5 * rst.res[0]
+            lims_ul[3] = lims_ul[3] + 0.5 * rst.res[1]
+
+        assert rst.ij2xy([0], [0]) == ([lims_ul[0]], [lims_ul[3]])
+        assert rst.ij2xy([rst.shape[0] - 1], [0]) == ([lims_ul[0]], [lims_ul[1]])
+        assert rst.ij2xy([0], [rst.shape[1] - 1]) == ([lims_ul[2]], [lims_ul[3]])
+        assert rst.ij2xy([rst.shape[0] - 1], [rst.shape[1] - 1]) == ([lims_ul[2]], [lims_ul[1]])
+
+    @pytest.mark.parametrize("example", [landsat_b4_path, aster_dem_path, landsat_rgb_path])  # type: ignore
+    def test_xy2ij_ij2xy_reversible(self, example: str):
+
+        # Open raster
+        rst = gu.Raster(example)
+        xmin, ymin, xmax, ymax = rst.bounds
 
         # We generate random points within the boundaries of the image
+        np.random.seed(42)
         xrand = np.random.randint(low=0, high=rst.width, size=(10,)) * list(rst.transform)[0] + xmin
         yrand = ymax + np.random.randint(low=0, high=rst.height, size=(10,)) * list(rst.transform)[4]
 
-        # Test reversibility (only works with default upper-left offset)
+        # Test reversibility for any point or area interpretation
         i, j = rst.xy2ij(xrand, yrand)
         xnew, ynew = rst.ij2xy(i, j)
         assert all(xnew == xrand)
@@ -1539,13 +2020,13 @@ class TestRaster:
         # r.ds.index(x, y, op=np.float32)
         # Out[34]: (75.0, 302.0)
 
-    def test_xy2ij_and_interp(self) -> None:
-        """Test xy2ij with shift_area_or_point argument, and related interp function"""
+    def test_xy2ij(self) -> None:
+        """Test xy2ij with shift_area_or_point argument, and compare to interp_points function for consistency."""
 
         # First, we try on a Raster with a Point interpretation in its "AREA_OR_POINT" metadata: values interpolated
         # at the center of pixel
         r = gu.Raster(self.landsat_b4_path)
-        assert r.tags["AREA_OR_POINT"] == "Point"
+        assert r.area_or_point == "Point"
         xmin, ymin, xmax, ymax = r.bounds
 
         # We generate random points within the boundaries of the image
@@ -1554,7 +2035,7 @@ class TestRaster:
         pts = list(zip(xrand, yrand))
 
         # Get decimal indexes based on "Point", should refer to the corner still (shift False by default)
-        i, j = r.xy2ij(xrand, yrand)
+        i, j = r.xy2ij(xrand, yrand, shift_area_or_point=False)
         assert np.all(i % 1 == 0)
         assert np.all(j % 1 == 0)
 
@@ -1564,34 +2045,10 @@ class TestRaster:
         assert np.all(j % 1 == 0.5)
 
         # Force "Area", should refer to corner
-        r.tags.update({"AREA_OR_POINT": "Area"})
+        r.set_area_or_point("Area", shift_area_or_point=False)
         i, j = r.xy2ij(xrand, yrand, shift_area_or_point=True)
         assert np.all(i % 1 == 0)
         assert np.all(j % 1 == 0)
-
-        # Check errors are raised when type of tag is incorrect
-        r0 = r.copy()
-        # When the tag is not a string
-        r0.tags.update({"AREA_OR_POINT": 1})
-        with pytest.raises(TypeError, match=re.escape('Attribute self.tags["AREA_OR_POINT"] must be a string.')):
-            r0.xy2ij(xrand, yrand, shift_area_or_point=True)
-        # When the tag is not "Area" or "Point"
-        r0.tags.update({"AREA_OR_POINT": "Pt"})
-        with pytest.raises(
-            ValueError, match=re.escape('Attribute self.tags["AREA_OR_POINT"] must be one of "Area" or "Point".')
-        ):
-            r0.xy2ij(xrand, yrand, shift_area_or_point=True)
-
-        # Check that the function warns when no tag is defined
-        r0.tags.pop("AREA_OR_POINT")
-        with pytest.warns(
-            UserWarning,
-            match=re.escape('Attribute AREA_OR_POINT undefined in self.tags, using "Area" as default (no shift).'),
-        ):
-            i0, j0 = r0.xy2ij(xrand, yrand, shift_area_or_point=True)
-        # And that it defaults to "Area"
-        assert all(i == i0)
-        assert all(j == j0)
 
         # Now, we calculate the mean of values in each 2x2 slices of the data, and compare with interpolation at order 1
         list_z_ind = []
@@ -1607,7 +2064,7 @@ class TestRaster:
             list_z_ind.append(z_ind)
 
         # First order interpolation
-        rpts = r.interp_points(pts, order=1)
+        rpts = r.interp_points(pts, method="linear")
         # The values interpolated should be equal
         assert np.array_equal(np.array(list_z_ind, dtype=np.float32), rpts, equal_nan=True)
 
@@ -1615,13 +2072,13 @@ class TestRaster:
         xrand = np.random.uniform(low=xmin, high=xmax, size=(1000,))
         yrand = np.random.uniform(low=ymin, high=ymax, size=(1000,))
         pts = list(zip(xrand, yrand))
-        rpts = r.interp_points(pts)
+        r.interp_points(pts)
 
         # Second, test after a crop: the Raster now has an Area interpretation, those should fall right on the integer
         # pixel indexes
         r2 = gu.Raster(self.landsat_b4_crop_path)
         r.crop(r2)
-        assert r.tags["AREA_OR_POINT"] == "Area"
+        assert r.area_or_point == "Area"
 
         xmin, ymin, xmax, ymax = r.bounds
 
@@ -1639,7 +2096,7 @@ class TestRaster:
             z_ind = img[int(i[k]), int(j[k])]
             list_z_ind.append(z_ind)
 
-        rpts = r.interp_points(pts, order=1)
+        rpts = r.interp_points(pts, method="linear")
 
         assert np.array_equal(np.array(list_z_ind, dtype=np.float32), rpts, equal_nan=True)
 
@@ -1647,13 +2104,140 @@ class TestRaster:
         x = 493120.0
         y = 3101000.0
         i, j = r.xy2ij(x, y)
-        val = r.interp_points([(x, y)], order=1)[0]
-        assert img[int(i), int(j)] == val
+        val = r.interp_points([(x, y)], method="linear")[0]
+        val_img = img[int(i[0]), int(j[0])]
+        assert val_img == val
 
         # Finally, check that interp convert to latlon
-        lat, lon = gu.projtools.reproject_to_latlon((x, y), in_crs=r.crs)
-        val_latlon = r.interp_points([(lat, lon)], order=1, input_latlon=True)[0]
+        lat, lon = gu.projtools.reproject_to_latlon([x, y], in_crs=r.crs)
+        val_latlon = r.interp_points([(lat, lon)], method="linear", input_latlon=True)[0]
         assert val == pytest.approx(val_latlon, abs=0.0001)
+
+    @pytest.mark.parametrize("tag_aop", [None, "Area", "Point"])  # type: ignore
+    @pytest.mark.parametrize("shift_aop", [True, False])  # type: ignore
+    def test_interp_points__synthetic(self, tag_aop: str | None, shift_aop: bool) -> None:
+        """Test interp_points function with synthetic data."""
+
+        # We flip the array up/down to facilitate index comparison of Y axis
+        arr = np.flipud(np.array([1, 2, 3, 4, 5, 6, 7, 8, 9]).reshape((3, 3)))
+        transform = rio.transform.from_bounds(0, 0, 3, 3, 3, 3)
+        raster = gu.Raster.from_array(data=arr, transform=transform, crs=None, nodata=-9999)
+
+        # Define the AREA_OR_POINT attribute without re-transforming
+        raster.set_area_or_point(tag_aop, shift_area_or_point=False)
+
+        # Check interpolation falls right on values for points (1, 1), (1, 2) etc...
+        index_x = [0, 1, 2, 0, 1, 2, 0, 1, 2]
+        index_y = [0, 0, 0, 1, 1, 1, 2, 2, 2]
+
+        # The actual X/Y coords will be offset by one because Y axis is inverted and pixel coords is upper-left corner
+        points_x, points_y = raster.ij2xy(i=index_x, j=index_y, shift_area_or_point=shift_aop)
+
+        points = np.array((points_x, points_y)).T
+
+        # The following 4 methods should yield the same result because:
+        # Nearest = Linear interpolation at the location of a data point
+        # Regular grid = Equal grid interpolation at the location of a data point
+
+        raster_points = raster.interp_points(points, method="nearest", shift_area_or_point=shift_aop)
+        raster_points_lin = raster.interp_points(points, method="linear", shift_area_or_point=shift_aop)
+        raster_points_interpn = raster.interp_points(
+            points, method="nearest", force_scipy_function="interpn", shift_area_or_point=shift_aop
+        )
+        raster_points_interpn_lin = raster.interp_points(
+            points, method="linear", force_scipy_function="interpn", shift_area_or_point=shift_aop
+        )
+
+        assert np.array_equal(raster_points, raster_points_lin)
+        assert np.array_equal(raster_points, raster_points_interpn)
+        assert np.array_equal(raster_points, raster_points_interpn_lin)
+
+        for i in range(3):
+            for j in range(3):
+                ind = 3 * i + j
+                assert raster_points[ind] == arr[index_x[ind], index_y[ind]]
+
+        # Check bilinear interpolation values inside the grid (same here, offset by 1 between X and Y)
+        index_x_in = [0.5, 0.5, 1.5, 1.5]
+        index_y_in = [0.5, 1.5, 0.5, 1.5]
+
+        points_x_in, points_y_in = raster.ij2xy(i=index_x_in, j=index_y_in, shift_area_or_point=shift_aop)
+
+        points_in = np.array((points_x_in, points_y_in)).T
+
+        # Here again compare methods
+        raster_points_in = raster.interp_points(points_in, method="linear", shift_area_or_point=shift_aop)
+        raster_points_in_interpn = raster.interp_points(
+            points_in, method="linear", force_scipy_function="interpn", shift_area_or_point=shift_aop
+        )
+
+        assert np.array_equal(raster_points_in, raster_points_in_interpn)
+
+        for i in range(len(points_in)):
+
+            xlow = int(index_x_in[i] - 0.5)
+            xupp = int(index_x_in[i] + 0.5)
+            ylow = int(index_y_in[i] - 0.5)
+            yupp = int(index_y_in[i] + 0.5)
+
+            # Check the bilinear interpolation matches the mean value of those 4 points (equivalent as its the middle)
+            assert raster_points_in[i] == np.mean([arr[xlow, ylow], arr[xupp, ylow], arr[xupp, yupp], arr[xlow, yupp]])
+
+        # Check bilinear extrapolation for points at 1 spacing outside from the input grid
+        points_out = (
+            [(-1, i) for i in np.arange(1, 4)]
+            + [(i, -1) for i in np.arange(1, 4)]
+            + [(4, i) for i in np.arange(1, 4)]
+            + [(i, 4) for i in np.arange(4, 1)]
+        )
+        raster_points_out = raster.interp_points(points_out)
+        assert all(~np.isfinite(raster_points_out))
+
+        # To use cubic or quintic, we need a larger grid (minimum 6x6, but let's aim bigger with 50x50)
+        arr = np.flipud(np.arange(1, 2501).reshape((50, 50)))
+        transform = rio.transform.from_bounds(0, 0, 50, 50, 50, 50)
+        raster = gu.Raster.from_array(data=arr, transform=transform, crs=None, nodata=-9999)
+        raster.set_area_or_point(tag_aop, shift_area_or_point=False)
+
+        # For this, get random points
+        np.random.seed(42)
+        index_x_in_rand = np.random.randint(low=8, high=42, size=(10,)) + np.random.normal(scale=0.3)
+        index_y_in_rand = np.random.randint(low=8, high=42, size=(10,)) + np.random.normal(scale=0.3)
+        points_x_rand, points_y_rand = raster.ij2xy(i=index_x_in_rand, j=index_y_in_rand, shift_area_or_point=shift_aop)
+        points_in_rand = np.array((points_x_rand, points_y_rand)).T
+
+        for method in ["nearest", "linear", "cubic", "quintic"]:
+            raster_points_mapcoords = raster.interp_points(
+                points_in_rand, method=method, force_scipy_function="map_coordinates", shift_area_or_point=shift_aop
+            )
+            raster_points_interpn = raster.interp_points(
+                points_in_rand, method=method, force_scipy_function="interpn", shift_area_or_point=shift_aop
+            )
+
+            assert np.array_equal(raster_points_mapcoords, raster_points_interpn)
+
+        # Check that, outside the edge, the interpolation fails and returns a NaN
+        np.random.seed(42)
+        index_x_edge_rand = [-0.5, -0.5, -0.5, 25, 25, 49.5, 49.5, 49.5]
+        index_y_edge_rand = [-0.5, 25, 49.5, -0.5, 49.5, -0.5, 25, 49.5]
+
+        points_x_rand, points_y_rand = raster.ij2xy(
+            i=index_x_edge_rand, j=index_y_edge_rand, shift_area_or_point=shift_aop
+        )
+
+        points_edge_rand = np.array((points_x_rand, points_y_rand)).T
+
+        # Nearest doesn't apply, just linear and above
+        for method in ["cubic", "quintic"]:
+            raster_points_mapcoords_edge = raster.interp_points(
+                points_edge_rand, method=method, force_scipy_function="map_coordinates", shift_area_or_point=shift_aop
+            )
+            raster_points_interpn_edge = raster.interp_points(
+                points_edge_rand, method=method, force_scipy_function="interpn", shift_area_or_point=shift_aop
+            )
+
+            assert all(~np.isfinite(raster_points_mapcoords_edge))
+            assert all(~np.isfinite(raster_points_interpn_edge))
 
     def test_value_at_coords(self) -> None:
         """
@@ -1672,11 +2256,11 @@ class TestRaster:
         itest0 = 120
         jtest0 = 451
         # This is the center of the pixel
-        xtest0 = 496975
-        ytest0 = 3099095
+        xtest0 = 496975.0
+        ytest0 = 3099095.0
 
         # Verify coordinates match indexes
-        x_out, y_out = r.ij2xy(itest0, jtest0, offset="center")
+        x_out, y_out = r.ij2xy(itest0, jtest0, force_offset="center")
         assert x_out == xtest0
         assert y_out == ytest0
 
@@ -1694,33 +2278,33 @@ class TestRaster:
         # -- Tests 2: check arguments work as intended --
 
         # 1/ Lat-lon argument check by getting the coordinates of our last test point
-        lat, lon = reproject_to_latlon(pts=[xtest0, ytest0], in_crs=r.crs)
+        lat, lon = reproject_to_latlon(points=[xtest0, ytest0], in_crs=r.crs)
         z_val_2 = r.value_at_coords(lon, lat, latlon=True)
         assert z_val == z_val_2
 
         # 2/ Band argument
-        # Get the indexes for the multi-band Raster
+        # Get the band indexes for the multi-band Raster
         r_multi = gu.Raster(self.landsat_rgb_path)
         itest, jtest = r_multi.xy2ij(xtest0, ytest0)
         itest = int(itest[0])
         jtest = int(jtest[0])
         # Extract the values
-        z_band1 = r_multi.value_at_coords(xtest0, ytest0, index=1)
-        z_band2 = r_multi.value_at_coords(xtest0, ytest0, index=2)
-        z_band3 = r_multi.value_at_coords(xtest0, ytest0, index=3)
+        z_band1 = r_multi.value_at_coords(xtest0, ytest0, band=1)
+        z_band2 = r_multi.value_at_coords(xtest0, ytest0, band=2)
+        z_band3 = r_multi.value_at_coords(xtest0, ytest0, band=3)
         # Compare to the Raster array slice
         assert list(r_multi.data[:, itest, jtest]) == [z_band1, z_band2, z_band3]
 
         # 3/ Masked argument
         r_multi.data[:, itest, jtest] = np.ma.masked
-        z_not_ma = r_multi.value_at_coords(xtest0, ytest0, index=1)
+        z_not_ma = r_multi.value_at_coords(xtest0, ytest0, band=1)
         assert not np.ma.is_masked(z_not_ma)
-        z_ma = r_multi.value_at_coords(xtest0, ytest0, index=1, masked=True)
+        z_ma = r_multi.value_at_coords(xtest0, ytest0, band=1, masked=True)
         assert np.ma.is_masked(z_ma)
 
         # 4/ Window argument
         val_window, z_window = r_multi.value_at_coords(
-            xtest0, ytest0, index=1, window=3, masked=True, return_window=True
+            xtest0, ytest0, band=1, window=3, masked=True, return_window=True
         )
         assert (
             val_window
@@ -1731,7 +2315,7 @@ class TestRaster:
 
         # 5/ Reducer function argument
         val_window2 = r_multi.value_at_coords(
-            xtest0, ytest0, index=1, window=3, masked=True, reducer_function=np.ma.median
+            xtest0, ytest0, band=1, window=3, masked=True, reducer_function=np.ma.median
         )
         assert val_window2 == np.ma.median(r_multi.data[0, itest - 1 : itest + 2, jtest - 1 : jtest + 2])
 
@@ -1805,6 +2389,7 @@ class TestRaster:
 
         # The nodata value should have been set in the metadata
         assert r.nodata == new_nodata
+        assert r.data.fill_value == new_nodata
 
         # By default, the array should have been updated
         if old_nodata is not None:
@@ -1833,15 +2418,17 @@ class TestRaster:
         with pytest.warns(
             UserWarning,
             match=re.escape(
-                "New nodata value found in the data array. Those will be masked, and the old "
-                "nodata cells will now take the same value. Use set_nodata() with update_array=False "
-                "and/or update_mask=False to change this behaviour."
+                "New nodata value cells already exist in the data array. These cells will now be "
+                "masked, and the old nodata value cells will update to the same new value. "
+                "Use set_nodata() with update_array=False or update_mask=False to change "
+                "this behaviour."
             ),
         ):
             r.set_nodata(new_nodata=new_nodata)
 
         # The nodata value should have been set in the metadata
         assert r.nodata == new_nodata
+        assert r.data.fill_value == new_nodata
 
         # By default, the array should have been updated similarly for the old nodata
         if old_nodata is not None:
@@ -1876,14 +2463,15 @@ class TestRaster:
         with pytest.warns(
             UserWarning,
             match=re.escape(
-                "New nodata value found in the data array. Those will be masked. Use set_nodata() "
-                "with update_mask=False to change this behaviour."
+                "New nodata value cells already exist in the data array. These cells will now be masked. "
+                "Use set_nodata() with update_mask=False to change this behaviour."
             ),
         ):
             r.set_nodata(new_nodata=new_nodata, update_array=False)
 
         # The nodata value should have been set in the metadata
         assert r.nodata == new_nodata
+        assert r.data.fill_value == new_nodata
 
         # Now, the array should not have been updated, so the entire array should be unchanged except for the pixel
         assert np.array_equal(r.data.data[~mask_pixel_artificially_set], r_copy.data.data[~mask_pixel_artificially_set])
@@ -1904,14 +2492,15 @@ class TestRaster:
         with pytest.warns(
             UserWarning,
             match=re.escape(
-                "New nodata value found in the data array. The old nodata cells will now take the same "
-                "value. Use set_nodata() with update_array=False to change this behaviour."
+                "New nodata value cells already exist in the data array. The old nodata cells will update to "
+                "the same new value. Use set_nodata() with update_array=False to change this behaviour."
             ),
         ):
             r.set_nodata(new_nodata=new_nodata, update_mask=False)
 
         # The nodata value should have been set in the metadata
         assert r.nodata == new_nodata
+        assert r.data.fill_value == new_nodata
 
         # The array should have been updated
         if old_nodata is not None:
@@ -1938,6 +2527,7 @@ class TestRaster:
 
         # The nodata value should have been set in the metadata
         assert r.nodata == new_nodata
+        assert r.data.fill_value == new_nodata
 
         # The array should not have been updated except for the pixel
         assert np.array_equal(r.data.data[~mask_pixel_artificially_set], r_copy.data.data[~mask_pixel_artificially_set])
@@ -1994,7 +2584,7 @@ class TestRaster:
         with warnings.catch_warnings():
             # Ignore warning that nodata value is already used in the raster data
             warnings.filterwarnings(
-                "ignore", category=UserWarning, message="For reprojection, dst_nodata must be set.*"
+                "ignore", category=UserWarning, message="New nodata value cells already exist in the data array.*"
             )
             r.set_nodata(_default_nodata(r.dtypes[0]))
             r_copy.nodata = _default_nodata(r.dtypes[0])
@@ -2015,13 +2605,13 @@ class TestRaster:
 
         # Check it works with most frequent np.dtypes too
         assert _default_nodata(np.dtype("uint8")) == np.iinfo("uint8").max
-        for dtype in [np.dtype("int32"), np.dtype("float32"), np.dtype("float64")]:
-            assert _default_nodata(dtype) == -99999
+        for dtype_obj in [np.dtype("int32"), np.dtype("float32"), np.dtype("float64")]:
+            assert _default_nodata(dtype_obj) == -99999  # type: ignore
 
         # Check it works with most frequent types too
         assert _default_nodata(np.uint8) == np.iinfo("uint8").max
-        for dtype in [np.int32, np.float32, np.float64]:
-            assert _default_nodata(dtype) == -99999
+        for dtype_obj in [np.int32, np.float32, np.float64]:
+            assert _default_nodata(dtype_obj) == -99999
 
         # Check that an error is raised for other types
         expected_message = "No default nodata value set for dtype."
@@ -2032,58 +2622,72 @@ class TestRaster:
         with pytest.raises(TypeError, match="dtype 1 not understood."):
             _default_nodata(1)  # type: ignore
 
-    def test_astype(self) -> None:
-        warnings.simplefilter("error")
+    @pytest.mark.parametrize("example", [landsat_b4_path, aster_dem_path, landsat_rgb_path])  # type: ignore
+    def test_astype(self, example: str) -> None:
 
-        r = gu.Raster(self.landsat_b4_path)
+        warnings.filterwarnings(
+            "ignore", category=UserWarning, message="Unmasked values equal to the nodata value found in data array.*"
+        )
+
+        # Load raster
+        r = gu.Raster(example)
+
+        all_dtypes = ["uint8", "int8", "uint16", "int16", "uint32", "int32", "float32", "float64"]
+
+        dtypes_preserving = list({np.promote_types(r.dtypes[0], dtype) for dtype in all_dtypes})
+        dtypes_nonpreserving = [dtype for dtype in all_dtypes if dtype not in dtypes_preserving]
 
         # Test changing dtypes that does not modify the data
-        for dtype in [np.uint8, np.uint16, np.float32, np.float64, "float32"]:
-            rout = r.astype(dtype)  # type: ignore
-            assert np.array_equal(r.data.data, rout.data.data)
-            assert np.array_equal(r.data.mask, rout.data.mask)
-            assert np.dtype(rout.dtypes[0]) == dtype
-            assert rout.data.dtype == dtype
+        for target_dtype in dtypes_preserving:
+            rout = r.astype(target_dtype)  # type: ignore
 
-        # Test a dtype that will modify the data
-        with pytest.warns(UserWarning, match="dtype conversion will result in a loss"):
-            dtype = np.int8
-            rout = r.astype(dtype)  # type: ignore
-            assert not np.array_equal(r.data.data, rout.data.data)
-            assert np.array_equal(r.data.mask, rout.data.mask)
-            assert np.dtype(rout.dtypes[0]) == dtype
-            assert rout.data.dtype == dtype
+            if "LE71" in os.path.basename(example):
+                assert np.ma.allequal(r.data, rout.data)  # Only the same array ignoring nodata values
+            else:
+                assert np.array_equal(r.data.data, rout.data.data)  # Not the same array anymore with conversion
+                assert np.array_equal(r.data.mask, rout.data.mask)
+
+            assert np.dtype(rout.dtypes[0]) == target_dtype
+            assert rout.data.dtype == target_dtype
+            # For any data type, data should be recast to the new type
+            assert rout.nodata == _default_nodata(target_dtype)
+
+        # Test dtypes that will modify the data
+        for target_dtype2 in dtypes_nonpreserving:
+
+            with pytest.warns(UserWarning, match="dtype conversion will result in a loss of information.*"):
+                rout = r.astype(target_dtype2)  # type: ignore
+
+            assert np.array_equal(
+                r.data.data.astype(target_dtype2), rout.data.data
+            )  # Not the same array anymore with conversion
+
+            assert np.dtype(rout.dtypes[0]) == target_dtype2
+            assert rout.data.dtype == target_dtype2
+            assert rout.nodata == _default_nodata(target_dtype2)
 
         # Test modify in place
-        for dtype in [np.uint8, np.uint16, np.float32, np.float64, "float32"]:
-            r2 = r.copy()
-            out = r2.astype(dtype, inplace=True)
-            assert out is None
-            assert np.array_equal(r.data.data, r2.data.data)
-            assert np.array_equal(r.data.mask, r2.data.mask)
-            assert np.dtype(r2.dtypes[0]) == dtype
-            assert r2.data.dtype == dtype
-
-        # Test with masked values
-        # First line is set to 0 and 0 set to nodata - check that 0 not used
-        # Note that nodata must be set or astype will raise an error
-        assert not np.any(r2.data == 0)
+        dtype = np.float64
         r2 = r.copy()
-        r2.data[0, 0] = 0
+        out = r2.astype(dtype, inplace=True)
+        assert out is None
+        assert np.ma.allequal(r.data, r2.data)
+        assert np.dtype(r2.dtypes[0]) == dtype
+        assert r2.data.dtype == dtype
+        assert r2.nodata == _default_nodata(dtype)
 
-        with pytest.warns(UserWarning, match="New nodata value found in the data array.*"):
-            r2.set_nodata(0)
+        # Test without converting nodata
+        dtype = np.float64
+        r3 = r.copy()
+        out = r3.astype(dtype, inplace=True, convert_nodata=False)
+        assert out is None
+        assert np.ma.allequal(r.data, r3.data)
+        assert np.dtype(r3.dtypes[0]) == dtype
+        assert r3.data.dtype == dtype
+        assert r3.nodata == r.nodata
 
-        for dtype in [np.uint8, np.uint16, np.float32, np.float64, "float32"]:
-            rout = r2.astype(dtype)  # type: ignore
-            assert np.array_equal(r2.data.data, rout.data.data)
-            assert np.array_equal(r2.data.mask, rout.data.mask)
-            assert np.dtype(rout.dtypes[0]) == dtype
-            assert rout.data.dtype == dtype
-
-    @pytest.mark.parametrize(
-        "example", [landsat_b4_path, landsat_b4_crop_path, landsat_rgb_path, aster_dem_path]
-    )  # type: ignore
+    # The multi-band example will not have a colorbar, so not used in tests
+    @pytest.mark.parametrize("example", [landsat_b4_path, landsat_b4_crop_path, aster_dem_path])  # type: ignore
     @pytest.mark.parametrize("figsize", np.arange(2, 20, 2))  # type: ignore
     def test_show_cbar(self, example, figsize) -> None:
         """
@@ -2092,7 +2696,7 @@ class TestRaster:
         # Plot raster with cbar
         r0 = gu.Raster(example)
         fig, ax = plt.subplots(figsize=(figsize, figsize))
-        r0.show(
+        r0.plot(
             ax=ax,
             add_cbar=True,
         )
@@ -2119,8 +2723,25 @@ class TestRaster:
         img_RGB = gu.Raster(self.landsat_rgb_path)
 
         # Test default plot
+        img.plot()
+        if DO_PLOT:
+            plt.show()
+        else:
+            plt.close()
+        assert True
+
+        # Test with new figure
+        plt.figure()
+        img.plot()
+        if DO_PLOT:
+            plt.show()
+        else:
+            plt.close()
+        assert True
+
+        # Test with provided ax
         ax = plt.subplot(111)
-        img.show(ax=ax, title="Simple plotting test")
+        img.plot(ax=ax, title="Simple plotting test")
         if DO_PLOT:
             plt.show()
         else:
@@ -2129,7 +2750,7 @@ class TestRaster:
 
         # Test plot RGB
         ax = plt.subplot(111)
-        img_RGB.show(ax=ax, title="Plotting RGB")
+        img_RGB.plot(ax=ax, title="Plotting RGB")
         if DO_PLOT:
             plt.show()
         else:
@@ -2138,7 +2759,7 @@ class TestRaster:
 
         # Test plotting single band B/W, add_cbar
         ax = plt.subplot(111)
-        img_RGB.show(index=1, cmap="gray", ax=ax, add_cbar=False, title="Plotting one band B/W")
+        img_RGB.plot(bands=1, cmap="gray", ax=ax, add_cbar=False, title="Plotting one band B/W")
         if DO_PLOT:
             plt.show()
         else:
@@ -2147,7 +2768,7 @@ class TestRaster:
 
         # Test vmin, vmax and cbar_title
         ax = plt.subplot(111)
-        img.show(
+        img.plot(
             cmap="gray", vmin=40, vmax=220, cbar_title="Custom cbar", ax=ax, title="Testing vmin, vmax and cbar_title"
         )
         if DO_PLOT:
@@ -2215,10 +2836,14 @@ class TestRaster:
 
     @pytest.mark.parametrize("example", [landsat_b4_path, aster_dem_path, landsat_rgb_path])  # type: ignore
     def test_coords(self, example: str) -> None:
+
         img = gu.Raster(self.landsat_b4_path)
 
-        # With corner argument
-        xx0, yy0 = img.coords(offset="corner", grid=False)
+        # With lower left argument
+        xx0, yy0 = img.coords(grid=False, force_offset="ll")
+
+        assert len(xx0) == img.width
+        assert len(yy0) == img.height
 
         assert xx0[0] == pytest.approx(img.bounds.left)
         assert xx0[-1] == pytest.approx(img.bounds.right - img.res[0])
@@ -2231,7 +2856,7 @@ class TestRaster:
             assert yy0[-1] == pytest.approx(img.bounds.bottom + img.res[1])
 
         # With center argument
-        xx, yy = img.coords(offset="center", grid=False)
+        xx, yy = img.coords(grid=False, force_offset="center")
         hx = img.res[0] / 2
         hy = img.res[1] / 2
         assert xx[0] == pytest.approx(img.bounds.left + hx)
@@ -2245,14 +2870,23 @@ class TestRaster:
             assert yy[0] == pytest.approx(img.bounds.bottom - hy)
 
         # With grid argument (default argument, repeated here for clarity)
-        xxgrid, yygrid = img.coords(offset="corner", grid=True)
+        xxgrid, yygrid = img.coords(grid=True, force_offset="ll")
         assert np.array_equal(xxgrid, np.repeat(xx0[np.newaxis, :], img.height, axis=0))
         assert np.array_equal(yygrid, np.flipud(np.repeat(yy0[:, np.newaxis], img.width, axis=1)))
 
-    def test_from_array(self) -> None:
+    @pytest.mark.parametrize("example", [landsat_b4_path, aster_dem_path, landsat_rgb_path])  # type: ignore
+    def test_from_array(self, example: str) -> None:
+
+        if "LE71" in os.path.basename(example):
+            warnings.filterwarnings(
+                "ignore",
+                category=UserWarning,
+                message="Unmasked values equal to the nodata value found in data array.*",
+            )
+
         # Test that from_array works if nothing is changed
-        # -> most tests already performed in test_copy, no need for more
-        img = gu.Raster(self.landsat_b4_path)
+        # -> most tests already performed in test_copy and data.setter, no need for many more
+        img = gu.Raster(self.aster_dem_path)
         out_img = gu.Raster.from_array(img.data, img.transform, img.crs, nodata=img.nodata)
         assert out_img.raster_equal(img)
 
@@ -2290,7 +2924,7 @@ class TestRaster:
             [
                 "'''Sample code that should conform to pylint's standards.'''",  # Add docstring
                 "import geoutils as gu",  # Import geoutils
-                "raster = gu.Raster(gu.datasets.get_path('landsat_B4'))",  # Load a raster
+                "raster = gu.Raster(gu.examples.get_path('landsat_B4'))",  # Load a raster
             ]
             + [  # The below statements should not raise a 'no-member' (E1101) error.
                 f"{attribute.upper()} = raster.{attribute}" for attribute in attributes
@@ -2302,9 +2936,11 @@ class TestRaster:
         with open(temp_path, "w") as outfile:
             outfile.write(sample_code)
 
-        # Run pylint and parse the stdout as a string
-        lint_string = epylint.py_run(temp_path, return_std=True)[0].getvalue()
+        # Run pylint and parse the stdout as a string, only test
+        pylint_output = StringIO()
+        Run([temp_path], reporter=TextReporter(pylint_output), exit=False)
 
+        lint_string = pylint_output.getvalue()
         print(lint_string)  # Print the output for debug purposes
 
         # Bad linting errors are defined here. Currently just "no-member" errors
@@ -2324,10 +2960,10 @@ class TestRaster:
         assert img.count == 3
 
         # Extract only one band (then it will not return a list)
-        red2 = img.split_bands(copy=False, subset=1)[0]
+        red2 = img.split_bands(copy=False, bands=1)[0]
 
         # Extract a subset with a list in a weird direction
-        blue2, green2 = img.split_bands(copy=False, subset=[3, 2])
+        blue2, green2 = img.split_bands(copy=False, bands=[3, 2])
 
         # Check that the subset functionality works as expected.
         assert red.raster_equal(red2)
@@ -2352,7 +2988,7 @@ class TestRaster:
         )
 
         # Copy the bands instead of pointing to the same memory.
-        red_c = img.split_bands(copy=True, subset=1)[0]
+        red_c = img.split_bands(copy=True, bands=1)[0]
 
         # Check that the red band data does not share memory with the rgb image (it's a copy)
         assert not np.shares_memory(red_c.data, img.data)
@@ -2378,6 +3014,8 @@ class TestRaster:
 
         img1 = gu.Raster(self.landsat_b4_path)
         img2 = gu.Raster(self.landsat_b4_crop_path)
+        # Set img2 pixel interpretation as "Point" to match "img1" and avoid any warnings
+        img2.set_area_or_point("Point", shift_area_or_point=False)
         img1.set_nodata(0)
         img2.set_nodata(0)
 
@@ -2416,6 +3054,11 @@ class TestRaster:
                 warnings.filterwarnings(
                     "ignore", category=UserWarning, message="dtype conversion will result in a " "loss of information.*"
                 )
+                warnings.filterwarnings(
+                    "ignore",
+                    category=UserWarning,
+                    message="Unmasked values equal to the nodata value found in data array.*",
+                )
                 img_dtype = img_dtype.astype(dtype)
             value = np.unique(img_dtype)[0]
             img_dtype.polygonize(target_values=value)
@@ -2439,6 +3082,9 @@ class TestRaster:
     )  # type: ignore
     def test_proximity_against_gdal(self, distunits: str, target_values: list[float] | None, raster: gu.Raster) -> None:
         """Test that proximity matches the results of GDAL for any parameter."""
+
+        # TODO: When adding new rasters for tests, specify warning only for Landsat
+        warnings.filterwarnings("ignore", message="Setting default nodata -99999 to mask non-finite values *")
 
         # We generate proximity with GDAL and GeoUtils
         gdal_proximity = run_gdal_proximity(raster, target_values=target_values, distunits=distunits)
@@ -2531,51 +3177,155 @@ class TestRaster:
         # With only inside proximity
         raster1.proximity(vector=vector, in_or_out="in")
 
-    def test_to_points(self) -> None:
-        """Test the outputs of the to_points method and that it doesn't load if not needed."""
+    def test_to_pointcloud(self) -> None:
+        """Test to_pointcloud method."""
+
+        # 1/ Single band synthetic data
 
         # Create a small raster to test point sampling on
-        img0 = gu.Raster.from_array(
-            np.arange(25, dtype="int32").reshape(5, 5), transform=rio.transform.from_origin(0, 5, 1, 1), crs=4326
-        )
+        img_arr = np.arange(25, dtype="int32").reshape(5, 5)
+        img0 = gu.Raster.from_array(img_arr, transform=rio.transform.from_origin(0, 5, 1, 1), crs=4326)
 
         # Sample the whole raster (fraction==1)
-        points = img0.to_points(1, as_array=True)
+        points = img0.to_pointcloud()
+        points_arr = img0.to_pointcloud(as_array=True)
+
+        # Check output types
+        assert isinstance(points, gu.Vector)
+        assert isinstance(points_arr, np.ndarray)
+
+        # Check that both outputs (array or vector) are fully consistent, order matters here
+        assert np.array_equal(points.ds.geometry.x.values, points_arr[:, 0])
+        assert np.array_equal(points.ds.geometry.y.values, points_arr[:, 1])
+        assert np.array_equal(points.ds["b1"].values, points_arr[:, 2])
 
         # Validate that 25 points were sampled (equating to img1.height * img1.width) with x, y, and band0 values.
-        assert isinstance(points, np.ndarray)
-        assert points.shape == (25, 3)
-        assert np.array_equal(np.asarray(points[:, 0]), np.tile(np.linspace(0.5, 4.5, 5), 5))
+        assert points_arr.shape == (25, 3)
+        assert points.ds.shape == (25, 2)  # One less column here due to geometry storing X and Y
+        # Check that X, Y and Z arrays are equal to raster array input independently of value order
+        x_coords, y_coords = img0.ij2xy(i=np.arange(0, 5), j=np.arange(0, 5))
+        assert np.array_equal(np.sort(np.asarray(points_arr[:, 0])), np.sort(np.tile(x_coords, 5)))
+        assert np.array_equal(np.sort(np.asarray(points_arr[:, 1])), np.sort(np.tile(y_coords, 5)))
+        assert np.array_equal(np.sort(np.asarray(points_arr[:, 2])), np.sort(img_arr.ravel()))
 
-        assert img0.to_points(0.2, as_array=True).shape == (5, 3)
+        # Check that subsampling works properly
+        points_arr = img0.to_pointcloud(subsample=0.2, as_array=True)
+        assert points_arr.shape == (5, 3)
 
-        # Try with a single-band raster
+        # All values should be between 0 and 25
+        assert all(0 <= points_arr[:, 2]) and all(points_arr[:, 2] < 25)
+
+        # 2/ Multi-band synthetic data
+        img_arr = np.arange(25, dtype="int32").reshape(5, 5)
+        img_3d_arr = np.stack((img_arr, 25 + img_arr, 50 + img_arr), axis=0)
+        img3d = gu.Raster.from_array(img_3d_arr, transform=rio.transform.from_origin(0, 5, 1, 1), crs=4326)
+
+        # Sample the whole raster (fraction==1)
+        points = img3d.to_pointcloud(auxiliary_data_bands=[2, 3])
+        points_arr = img3d.to_pointcloud(as_array=True, auxiliary_data_bands=[2, 3])
+
+        # Check equality between both output types
+        assert np.array_equal(points.ds.geometry.x.values, points_arr[:, 0])
+        assert np.array_equal(points.ds.geometry.y.values, points_arr[:, 1])
+        assert np.array_equal(points.ds["b1"].values, points_arr[:, 2])
+        assert np.array_equal(points.ds["b2"].values, points_arr[:, 3])
+        assert np.array_equal(points.ds["b3"].values, points_arr[:, 4])
+
+        # Check it is the right data
+        assert np.array_equal(np.sort(np.asarray(points_arr[:, 0])), np.sort(np.tile(x_coords, 5)))
+        assert np.array_equal(np.sort(np.asarray(points_arr[:, 1])), np.sort(np.tile(y_coords, 5)))
+        assert np.array_equal(np.sort(np.asarray(points_arr[:, 2])), np.sort(img_3d_arr[0, :, :].ravel()))
+        assert np.array_equal(np.sort(np.asarray(points_arr[:, 3])), np.sort(img_3d_arr[1, :, :].ravel()))
+        assert np.array_equal(np.sort(np.asarray(points_arr[:, 4])), np.sort(img_3d_arr[2, :, :].ravel()))
+
+        # With a subsample
+        points_arr = img3d.to_pointcloud(as_array=True, subsample=10, auxiliary_data_bands=[2, 3])
+        assert points_arr.shape == (10, 5)
+
+        # Check the values are still good
+        assert all(0 <= points_arr[:, 2]) and all(points_arr[:, 2] < 25)
+        assert all(25 <= points_arr[:, 3]) and all(points_arr[:, 3] < 50)
+        assert all(50 <= points_arr[:, 4]) and all(points_arr[:, 4] < 75)
+
+        # 3/ Single-band real raster with nodata values
         img1 = gu.Raster(self.aster_dem_path)
 
-        points = img1.to_points(10, as_array=True)
+        # Get a large sample to ensure they should be some NaNs normally
+        points_arr = img1.to_pointcloud(subsample=10000, as_array=True, random_state=42)
+        points = img1.to_pointcloud(subsample=10000, random_state=42)
 
-        assert points.shape == (10, 3)
+        # This should not load the image
         assert not img1.is_loaded
 
-        points_frame = img1.to_points(10)
+        # The subsampled values should be valid and the right shape
+        assert points_arr.shape == (10000, 3)
+        assert points.ds.shape == (10000, 2)  # One less column here due to geometry storing X and Y
+        assert all(np.isfinite(points_arr[:, 2]))
 
-        assert isinstance(points_frame, gu.Vector)
-        assert np.array_equal(points_frame.ds.columns, ["b1", "geometry"])
-        assert points_frame.crs == img1.crs
+        # The output should respect the default band naming and the input CRS
+        assert np.array_equal(points.ds.columns, ["b1", "geometry"])
+        assert points.crs == img1.crs
 
-        # Try with a multi-band raster
+        # Try setting the band name
+        points = img1.to_pointcloud(data_column_name="lol", subsample=10)
+        assert np.array_equal(points.ds.columns, ["lol", "geometry"])
+
+        # 4/ Multi-band real raster
         img2 = gu.Raster(self.landsat_rgb_path)
 
-        points = img2.to_points(10, as_array=True)
+        # By default only loads a single band without loading
+        points_arr = img2.to_pointcloud(subsample=10, as_array=True)
+        points = img2.to_pointcloud(subsample=10)
 
-        assert points.shape == (10, 5)
+        assert points_arr.shape == (10, 3)
+        assert points.ds.shape == (10, 2)  # One less column here due to geometry storing X and Y
         assert not img2.is_loaded
 
-        points_frame = img2.to_points(10)
+        # Storing auxiliary bands
+        points_arr = img2.to_pointcloud(subsample=10, as_array=True, auxiliary_data_bands=[2, 3])
+        points = img2.to_pointcloud(subsample=10, auxiliary_data_bands=[2, 3])
+        assert points_arr.shape == (10, 5)
+        assert points.ds.shape == (10, 4)  # One less column here due to geometry storing X and Y
+        assert not img2.is_loaded
+        assert np.array_equal(points.ds.columns, ["b1", "b2", "b3", "geometry"])
 
-        assert isinstance(points_frame, gu.Vector)
-        assert np.array_equal(points_frame.ds.columns, ["b1", "b2", "b3", "geometry"])
-        assert points_frame.crs == img2.crs
+        # Try setting the column name of a specific band while storing all
+        points = img2.to_pointcloud(subsample=10, data_column_name="yes", data_band=2, auxiliary_data_bands=[1, 3])
+        assert np.array_equal(points.ds.columns, ["yes", "b1", "b3", "geometry"])
+
+        # 5/ Error raising
+        with pytest.raises(ValueError, match="Data column name must be a string.*"):
+            img1.to_pointcloud(data_column_name=1)  # type: ignore
+        with pytest.raises(
+            ValueError,
+            match=re.escape("Data band number must be an integer between 1 and the total number of bands (3)."),
+        ):
+            img2.to_pointcloud(data_band=4)
+        with pytest.raises(
+            ValueError, match="Passing auxiliary column names requires passing auxiliary data band numbers as well."
+        ):
+            img2.to_pointcloud(auxiliary_column_names=["a"])
+        with pytest.raises(
+            ValueError, match="Auxiliary data band number must be an iterable containing only integers."
+        ):
+            img2.to_pointcloud(auxiliary_data_bands=[1, 2.5])  # type: ignore
+            img2.to_pointcloud(auxiliary_data_bands="lol")  # type: ignore
+        with pytest.raises(
+            ValueError,
+            match=re.escape("Auxiliary data band numbers must be between 1 and the total number of bands (3)."),
+        ):
+            img2.to_pointcloud(auxiliary_data_bands=[0])
+            img2.to_pointcloud(auxiliary_data_bands=[4])
+        with pytest.raises(
+            ValueError, match=re.escape("Main data band 1 should not be listed in auxiliary data bands [1, 2].")
+        ):
+            img2.to_pointcloud(auxiliary_data_bands=[1, 2])
+        with pytest.raises(ValueError, match="Auxiliary column names must be an iterable containing only strings."):
+            img2.to_pointcloud(auxiliary_data_bands=[2, 3], auxiliary_column_names=["lol", 1])
+        with pytest.raises(
+            ValueError, match="Length of auxiliary column name and data band numbers should be the same*"
+        ):
+            img2.to_pointcloud(auxiliary_data_bands=[2, 3], auxiliary_column_names=["lol", "lol2", "lol3"])
 
 
 class TestMask:
@@ -2599,13 +3349,15 @@ class TestMask:
     mask_landsat_b4 = gu.Raster(landsat_b4_path) > 125
     # Mask with nodata
     mask_aster_dem = gu.Raster(aster_dem_path) > 2000
+    # Mask from an outline
+    mask_everest = gu.Vector(everest_outlines_path).create_mask(gu.Raster(landsat_b4_path))
 
     @pytest.mark.parametrize("example", [landsat_b4_path, landsat_rgb_path, aster_dem_path])  # type: ignore
     def test_init(self, example: str) -> None:
         """Test that Mask subclass initialization function as intended."""
 
         # A warning should be raised when the raster is a multi-band
-        if "rgb" not in os.path.basename(example):
+        if "RGB" not in os.path.basename(example):
             mask = gu.Mask(example)
         else:
             with pytest.warns(
@@ -2631,6 +3383,8 @@ class TestMask:
     @pytest.mark.parametrize("example", [landsat_b4_path, landsat_rgb_path, aster_dem_path])  # type: ignore
     def test_repr_str(self, example: str) -> None:
         """Test the representation of a raster works"""
+
+        warnings.filterwarnings("ignore", message="Multi-band raster provided to create a Mask*")
 
         # For data not loaded by default
         r = gu.Mask(example)
@@ -2731,19 +3485,29 @@ class TestMask:
         assert np.array_equal(mask.data.data, rst.data.data >= 1)
         assert np.array_equal(mask.data.mask, rst.data.mask)
 
-    @pytest.mark.parametrize("mask", [mask_landsat_b4, mask_aster_dem])  # type: ignore
+    @pytest.mark.parametrize("mask", [mask_landsat_b4, mask_aster_dem, mask_everest])  # type: ignore
     def test_reproject(self, mask: gu.Mask) -> None:
         # Test 1: with a classic resampling (bilinear)
 
-        # Reproject mask
-        mask_reproj = mask.reproject()
+        # Reproject mask - resample to 100 x 100 grid
+        mask_orig = mask.copy()
+        mask_reproj = mask.reproject(grid_size=(100, 100), force_source_nodata=2)
 
         # Check instance is respected
         assert isinstance(mask_reproj, gu.Mask)
+        # Check the dtype of the original mask was properly reconverted
+        assert mask.data.dtype == bool
+        # Check the original mask was not modified during reprojection
+        assert mask_orig.raster_equal(mask)
+
+        # Check inplace behaviour works
+        mask_tmp = mask.copy()
+        mask_tmp.reproject(grid_size=(100, 100), force_source_nodata=2, inplace=True)
+        assert mask_tmp.raster_equal(mask_reproj)
 
         # This should be equivalent to converting the array to uint8, reprojecting, converting back
         mask_uint8 = mask.astype("uint8")
-        mask_uint8_reproj = mask_uint8.reproject()
+        mask_uint8_reproj = mask_uint8.reproject(grid_size=(100, 100), force_source_nodata=2)
         mask_uint8_reproj.data = mask_uint8_reproj.data.astype("bool")
 
         assert mask_reproj.raster_equal(mask_uint8_reproj)
@@ -2755,59 +3519,66 @@ class TestMask:
             match="Reprojecting a mask with a resampling method other than 'nearest', "
             "the boolean array will be converted to float during interpolation.",
         ):
-            mask.reproject(resampling="bilinear")
+            mask.reproject(res=50, resampling="bilinear", force_source_nodata=2)
 
-    @pytest.mark.parametrize("mask", [mask_landsat_b4, mask_aster_dem])  # type: ignore
+    @pytest.mark.parametrize("mask", [mask_landsat_b4, mask_aster_dem, mask_everest])  # type: ignore
     def test_crop(self, mask: gu.Mask) -> None:
         # Test with same bounds -> should be the same #
+
+        mask_orig = mask.copy()
         crop_geom = mask.bounds
-        mask_cropped = mask.crop(crop_geom, inplace=False)
+        mask_cropped = mask.crop(crop_geom)
         assert mask_cropped.raster_equal(mask)
 
         # Check if instance is respected
         assert isinstance(mask_cropped, gu.Mask)
+        # Check the dtype of the original mask was properly reconverted
+        assert mask.data.dtype == bool
+        # Check the original mask was not modified during cropping
+        assert mask_orig.raster_equal(mask)
 
-        # Test with bracket call
-        mask_cropped_getitem = mask[crop_geom]
-        assert mask_cropped_getitem.raster_equal(mask_cropped)
+        # Check inplace behaviour works
+        mask_tmp = mask.copy()
+        mask_tmp.crop(crop_geom, inplace=True)
+        assert mask_tmp.raster_equal(mask_cropped)
 
         # - Test cropping each side by a random integer of pixels - #
         rand_int = np.random.randint(1, min(mask.shape) - 1)
 
         # Left
         crop_geom2 = [crop_geom[0] + rand_int * mask.res[0], crop_geom[1], crop_geom[2], crop_geom[3]]
-        mask_cropped = mask.crop(crop_geom2, inplace=False)
+        mask_cropped = mask.crop(crop_geom2)
         assert list(mask_cropped.bounds) == crop_geom2
         assert np.array_equal(mask.data[:, rand_int:].data, mask_cropped.data.data, equal_nan=True)
         assert np.array_equal(mask.data[:, rand_int:].mask, mask_cropped.data.mask)
 
         # Right
         crop_geom2 = [crop_geom[0], crop_geom[1], crop_geom[2] - rand_int * mask.res[0], crop_geom[3]]
-        mask_cropped = mask.crop(crop_geom2, inplace=False)
+        mask_cropped = mask.crop(crop_geom2)
         assert list(mask_cropped.bounds) == crop_geom2
         assert np.array_equal(mask.data[:, :-rand_int].data, mask_cropped.data.data, equal_nan=True)
         assert np.array_equal(mask.data[:, :-rand_int].mask, mask_cropped.data.mask)
 
         # Bottom
         crop_geom2 = [crop_geom[0], crop_geom[1] + rand_int * abs(mask.res[1]), crop_geom[2], crop_geom[3]]
-        mask_cropped = mask.crop(crop_geom2, inplace=False)
+        mask_cropped = mask.crop(crop_geom2)
         assert list(mask_cropped.bounds) == crop_geom2
         assert np.array_equal(mask.data[:-rand_int, :].data, mask_cropped.data.data, equal_nan=True)
         assert np.array_equal(mask.data[:-rand_int, :].mask, mask_cropped.data.mask)
 
         # Top
         crop_geom2 = [crop_geom[0], crop_geom[1], crop_geom[2], crop_geom[3] - rand_int * abs(mask.res[1])]
-        mask_cropped = mask.crop(crop_geom2, inplace=False)
+        mask_cropped = mask.crop(crop_geom2)
         assert list(mask_cropped.bounds) == crop_geom2
         assert np.array_equal(mask.data[rand_int:, :].data, mask_cropped.data, equal_nan=True)
         assert np.array_equal(mask.data[rand_int:, :].mask, mask_cropped.data.mask)
 
         # Test inplace
         mask_orig = mask.copy()
-        mask.crop(crop_geom2)
-        assert list(mask.bounds) == crop_geom2
-        assert np.array_equal(mask_orig.data[rand_int:, :].data, mask.data, equal_nan=True)
-        assert np.array_equal(mask_orig.data[rand_int:, :].mask, mask.data.mask)
+        mask_orig.crop(crop_geom2, inplace=True)
+        assert list(mask_orig.bounds) == crop_geom2
+        assert np.array_equal(mask.data[rand_int:, :].data, mask_orig.data, equal_nan=True)
+        assert np.array_equal(mask.data[rand_int:, :].mask, mask_orig.data.mask)
 
         # Run with match_extent, check that inplace or not yields the same result
 
@@ -2818,10 +3589,16 @@ class TestMask:
         # mask_orig.crop(crop_geom2, mode="match_extent")
         # assert mask_cropped.raster_equal(mask_orig)
 
-    @pytest.mark.parametrize("mask", [mask_landsat_b4, mask_aster_dem])  # type: ignore
+    @pytest.mark.parametrize("mask", [mask_landsat_b4, mask_aster_dem, mask_everest])  # type: ignore
     def test_polygonize(self, mask: gu.Mask) -> None:
+
+        mask_orig = mask.copy()
         # Run default
         vect = mask.polygonize()
+        # Check the dtype of the original mask was properly reconverted
+        assert mask.data.dtype == bool
+        # Check the original mask was not modified during polygonizing
+        assert mask_orig.raster_equal(mask)
 
         # Check the output is cast into a vector
         assert isinstance(vect, gu.Vector)
@@ -2834,15 +3611,46 @@ class TestMask:
         with pytest.warns(UserWarning, match="In-value converted to 1 for polygonizing boolean mask."):
             mask.polygonize(target_values=2)
 
-    @pytest.mark.parametrize("mask", [mask_landsat_b4, mask_aster_dem])  # type: ignore
+    @pytest.mark.parametrize("mask", [mask_landsat_b4, mask_aster_dem, mask_everest])  # type: ignore
     def test_proximity(self, mask: gu.Mask) -> None:
+
+        mask_orig = mask.copy()
         # Run default
         rast = mask.proximity()
+        # Check the dtype of the original mask was properly reconverted
+        assert mask.data.dtype == bool
+        # Check the original mask was not modified during reprojection
+        assert mask_orig.raster_equal(mask)
 
         # Check that output is cast back into a raster
         assert isinstance(rast, gu.Raster)
         # A mask is a raster, so also need to check this
         assert not isinstance(rast, gu.Mask)
+
+    @pytest.mark.parametrize("mask", [mask_landsat_b4, mask_aster_dem, mask_everest])  # type: ignore
+    def test_save(self, mask: gu.Mask) -> None:
+        """Test saving for masks"""
+
+        # Temporary folder
+        temp_dir = tempfile.TemporaryDirectory()
+
+        # Save file to temporary file, with defaults opts
+        temp_file = os.path.join(temp_dir.name, "test.tif")
+        mask.save(temp_file)
+        saved = gu.Mask(temp_file)
+
+        # A raster (or mask) in-memory has more information than on disk, we need to update it before checking equality
+        # The values in its .data.data that are masked in .data.mask are not necessarily equal to the nodata value
+        mask.data.data[mask.data.mask] = True  # The default nodata 255 is converted to boolean True on masked values
+
+        # Check all attributes are equal
+        assert mask.raster_equal(saved)
+
+        # Clean up temporary folder - fails on Windows
+        try:
+            temp_dir.cleanup()
+        except (NotADirectoryError, PermissionError):
+            pass
 
 
 class TestArithmetic:
@@ -2854,8 +3662,12 @@ class TestArithmetic:
     # TODO: Add the case where a mask exists in the array, as in test_data_setter
     width = height = 5
     transform = rio.transform.from_bounds(0, 0, 1, 1, width, height)
-    r1 = gu.Raster.from_array(np.random.randint(1, 255, (height, width), dtype="uint8"), transform=transform, crs=None)
-    r2 = gu.Raster.from_array(np.random.randint(1, 255, (height, width), dtype="uint8"), transform=transform, crs=None)
+    r1 = gu.Raster.from_array(
+        np.random.randint(1, 255, (height, width), dtype="uint8"), transform=transform, crs=None, area_or_point="Area"
+    )
+    r2 = gu.Raster.from_array(
+        np.random.randint(1, 255, (height, width), dtype="uint8"), transform=transform, crs=None, area_or_point="Area"
+    )
 
     # Tests with different dtype
     r1_f32 = gu.Raster.from_array(
@@ -2895,6 +3707,13 @@ class TestArithmetic:
     transform2 = rio.transform.from_bounds(0, 0, 2, 2, width, height)
     r1_wrong_transform = gu.Raster.from_array(
         np.random.randint(0, 255, (height, width)).astype("float32"), transform=transform2, crs=None
+    )
+
+    r1_wrong_aop = gu.Raster.from_array(
+        np.random.randint(0, 255, (height, width)).astype("float32"),
+        transform=transform,
+        crs=None,
+        area_or_point="Point",
     )
 
     # Tests with child class
@@ -2943,6 +3762,22 @@ class TestArithmetic:
         r2 = r1.copy()
         r2.set_nodata(34)
         assert not r1.raster_equal(r2)
+
+        # Change value of a masked cell
+        r2 = r1.copy()
+        r2.data[0, 0] = np.ma.masked
+        r2.data.data[0, 0] = 0
+        r3 = r2.copy()
+        r3.data.data[0, 0] = 10
+        assert not r2.raster_equal(r3)
+        assert r2.raster_equal(r3, strict_masked=False)
+
+        # Check that a warning is raised with useful information without equality
+        with pytest.warns(UserWarning, match="Equality failed for: data.data."):
+            assert not r2.raster_equal(r3, warn_failure_reason=True)
+
+        # But no warning is raised for an equality
+        assert r2.raster_equal(r3, strict_masked=False, warn_failure_reason=True)
 
     def test_equal_georeferenced_grid(self) -> None:
         """
@@ -3033,7 +3868,7 @@ class TestArithmetic:
         r1 = self.r1
         r2 = self.r2
         r3 = getattr(r1, op)(r2)
-        ctype = np.find_common_type([r1.data.dtype, r2.data.dtype], [])
+        ctype = np.promote_types(r1.data.dtype, r2.data.dtype)
         numpy_output = getattr(r1.data.astype(ctype), op)(r2.data.astype(ctype))
         assert isinstance(r3, gu.Raster)
         assert np.all(r3.data == numpy_output)
@@ -3171,7 +4006,7 @@ class TestArithmetic:
     @classmethod
     def from_array(
         cls: type[TestArithmetic],
-        data: np.ndarray | np.ma.masked_array,
+        data: NDArrayNum | MArrayNum,
         rst_ref: gu.RasterType,
         nodata: int | float | list[int] | list[float] | None = None,
     ) -> gu.Raster:
@@ -3362,24 +4197,52 @@ class TestArithmetic:
     def test_raise_errors(self, op: str) -> None:
         """
         Test that errors are properly raised in certain situations.
+
+        !! Important !! Here we test errors with the operator on the raster only (arithmetic overloading),
+        calling with array first is supported with the NumPy interface and tested in ArrayInterface.
         """
-        # different shapes
-        expected_message = "Both rasters must have the same shape, transform and CRS."
-        with pytest.raises(ValueError, match=expected_message):
-            getattr(self.r1_wrong_shape, op)(self.r2)
+        # Rasters with different CRS, transform, or shape
+        # Different shape
+        expected_message = (
+            "Both rasters must have the same shape, transform and CRS for an arithmetic operation. "
+            "For example, use raster1 = raster1.reproject(raster2) to reproject raster1 on the "
+            "same grid and CRS than raster2."
+        )
+        with pytest.raises(ValueError, match=re.escape(expected_message)):
+            getattr(self.r2, op)(self.r1_wrong_shape)
 
-        # different CRS
-        with pytest.raises(ValueError, match=expected_message):
-            getattr(self.r1_wrong_crs, op)(self.r2)
+        # Different CRS
+        with pytest.raises(ValueError, match=re.escape(expected_message)):
+            getattr(self.r2, op)(self.r1_wrong_crs)
 
-        # different transform
-        with pytest.raises(ValueError, match=expected_message):
-            getattr(self.r1_wrong_transform, op)(self.r2)
+        # Different transform
+        with pytest.raises(ValueError, match=re.escape(expected_message)):
+            getattr(self.r2, op)(self.r1_wrong_transform)
+
+        # Array with different shape
+        expected_message = (
+            "The raster and array must have the same shape for an arithmetic operation. "
+            "For example, if the array comes from another raster, use raster1 = "
+            "raster1.reproject(raster2) beforehand to reproject raster1 on the same grid and CRS "
+            "than raster2. Or, if the array does not come from a raster, define one with raster = "
+            "Raster.from_array(array, array_transform, array_crs, array_nodata) then reproject."
+        )
+        # Different shape, masked array
+        with pytest.raises(ValueError, match=re.escape(expected_message)):
+            getattr(self.r2, op)(self.r1_wrong_shape.data)
+
+        # Different shape, normal array with NaNs
+        with pytest.raises(ValueError, match=re.escape(expected_message)):
+            getattr(self.r2, op)(self.r1_wrong_shape.data.filled(np.nan))
 
         # Wrong type of "other"
         expected_message = "Operation between an object of type .* and a Raster impossible."
         with pytest.raises(NotImplementedError, match=expected_message):
             getattr(self.r1, op)("some_string")
+
+        # Different area or point interpretation for two-raster input
+        with pytest.warns(UserWarning, match='One raster has a pixel interpretation "Area" and the other "Point".*'):
+            getattr(self.r2, op)(self.r1_wrong_aop)
 
     @pytest.mark.parametrize("power", [2, 3.14, -1])  # type: ignore
     def test_power(self, power: float | int) -> None:
@@ -3516,6 +4379,13 @@ class TestArrayInterface:
     assert np.count_nonzero(~mask2) > 0
     assert np.count_nonzero(~mask3) > 0
 
+    # Wrong shaped arrays to check errors are raised
+    arr_wrong_shape = np.random.randint(min_val, max_val, (height - 1, width - 1), dtype="int32") + np.random.normal(
+        size=(height - 1, width - 1)
+    )
+    wrong_transform = rio.transform.from_bounds(0, 0, 1, 1, width - 1, height - 1)
+    mask_wrong_shape = np.random.randint(0, 2, size=(width - 1, height - 1), dtype=bool)
+
     @pytest.mark.parametrize("ufunc_str", ufuncs_str_1nin_1nout + ufuncs_str_1nin_2nout)  # type: ignore
     @pytest.mark.parametrize(
         "dtype", ["uint8", "int8", "uint16", "int16", "uint32", "int32", "float32", "float64", "longdouble"]
@@ -3529,23 +4399,39 @@ class TestArrayInterface:
             nodata: int | None = _default_nodata(dtype)
         else:
             nodata = None
+            warnings.filterwarnings(
+                "ignore", category=UserWarning, message="Setting default nodata -99999 to mask non-finite values*"
+            )
 
         # Create Raster
-        ma1 = np.ma.masked_array(data=self.arr1.astype(dtype), mask=self.mask1)
-        rst = gu.Raster.from_array(ma1, transform=self.transform, crs=None, nodata=nodata)
+        with warnings.catch_warnings():
+            # For integer data types, unmasked nodata values can be created
+            if "int" in str(dtype):
+                warnings.filterwarnings(
+                    "ignore",
+                    category=UserWarning,
+                    message="Unmasked values equal to the nodata value found in data array.*",
+                )
+            ma1 = np.ma.masked_array(data=self.arr1.astype(dtype), mask=self.mask1)
+            rst = gu.Raster.from_array(ma1, transform=self.transform, crs=None, nodata=nodata)
 
         # Get ufunc
         ufunc = getattr(np, ufunc_str)
 
         # Find the common dtype between the Raster and the most constrained input type (first character is the input)
-        com_dtype = np.find_common_type([dtype] + [ufunc.types[0][0]], [])
+        try:
+            com_dtype = np.promote_types(dtype, ufunc.types[0][0])
+        # The promote_types function raises an error for object dtypes (previously returned by find_common_dtypes)
+        # (TypeError needed for backwards compatibility; also exceptions.DTypePromotionError for NumPy 1.25 and above)
+        except TypeError:
+            com_dtype = np.dtype("O")
 
         # Catch warnings
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=RuntimeWarning)
 
             # Check if our input dtype is possible on this ufunc, if yes check that outputs are identical
-            if com_dtype in (str(np.dtype(t[0])) for t in ufunc.types):
+            if com_dtype in [str(np.dtype(t[0])) for t in ufunc.types]:  # noqa
                 # For a single output
                 if ufunc.nout == 1:
                     assert np.ma.allequal(ufunc(rst.data), ufunc(rst).data)
@@ -3589,21 +4475,42 @@ class TestArrayInterface:
         else:
             nodata2 = None
 
-        ma1 = np.ma.masked_array(data=self.arr1.astype(dtype1), mask=self.mask1)
-        ma2 = np.ma.masked_array(data=self.arr2.astype(dtype2), mask=self.mask2)
-        rst1 = gu.Raster.from_array(ma1, transform=self.transform, crs=None, nodata=nodata1)
-        rst2 = gu.Raster.from_array(ma2, transform=self.transform, crs=None, nodata=nodata2)
+        with warnings.catch_warnings():
+            if any("int" in dtype for dtype in [str(dtype1), str(dtype2)]):
+                warnings.filterwarnings(
+                    "ignore",
+                    category=UserWarning,
+                    message="Unmasked values equal to the nodata value found in data array.*",
+                )
+            ma1 = np.ma.masked_array(data=self.arr1.astype(dtype1), mask=self.mask1)
+            ma2 = np.ma.masked_array(data=self.arr2.astype(dtype2), mask=self.mask2)
+            rst1 = gu.Raster.from_array(ma1, transform=self.transform, crs=None, nodata=nodata1)
+            rst2 = gu.Raster.from_array(ma2, transform=self.transform, crs=None, nodata=nodata2)
 
         ufunc = getattr(np, ufunc_str)
 
         # Find the common dtype between the Raster and the most constrained input type (first character is the input)
-        com_dtype1 = np.find_common_type([dtype1] + [ufunc.types[0][0]], [])
-        com_dtype2 = np.find_common_type([dtype2] + [ufunc.types[0][1]], [])
+        try:
+            com_dtype1 = np.promote_types(dtype1, ufunc.types[0][0])
+        # The promote_types function raises an error for object dtypes (previously returned by find_common_dtypes)
+        # (TypeError needed for backwards compatibility; also exceptions.DTypePromotionError for NumPy 1.25 and above)
+        except TypeError:
+            com_dtype1 = np.dtype("O")
+
+        try:
+            com_dtype2 = np.promote_types(dtype2, ufunc.types[0][1])
+        # The promote_types function raises an error for object dtypes (previously returned by find_common_dtypes)
+        # (TypeError needed for backwards compatibility; also exceptions.DTypePromotionError for NumPy 1.25 and above)
+        except TypeError:
+            com_dtype2 = np.dtype("O")
 
         # If the two input types can be the same type, pass a tuple with the common type of both
-        # Below we ignore datetime and timedelta types "m" and "M"
-        if all(t[0] == t[1] for t in ufunc.types if not ("m" or "M") in t[0:2]):
-            com_dtype_both = np.find_common_type([com_dtype1, com_dtype2], [])
+        # Below we ignore datetime and timedelta types "m" and "M", and int64 types "q" and "Q"
+        if all(t[0] == t[1] for t in ufunc.types if not any(x in t[0:2] for x in ["m", "M", "q", "Q"])):
+            try:
+                com_dtype_both = np.promote_types(com_dtype1, com_dtype2)
+            except TypeError:
+                com_dtype_both = np.dtype("O")
             com_dtype_tuple = (com_dtype_both, com_dtype_both)
 
         # Otherwise, pass the tuple with each common type
@@ -3613,10 +4520,12 @@ class TestArrayInterface:
         # Catch warnings
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=RuntimeWarning)
-            warnings.filterwarnings("ignore", category=UserWarning)
+            warnings.filterwarnings(
+                "ignore", category=UserWarning, message="Setting default nodata -99999 to mask non-finite values*"
+            )
 
             # Check if both our input dtypes are possible on this ufunc, if yes check that outputs are identical
-            if com_dtype_tuple in ((str(np.dtype(t[0])), str(np.dtype(t[1]))) for t in ufunc.types):
+            if com_dtype_tuple in [(np.dtype(t[0]), np.dtype(t[1])) for t in ufunc.types]:  # noqa
                 # For a single output
                 if ufunc.nout == 1:
                     # There exists a single exception due to negative integers as exponent of integers in "power"
@@ -3662,8 +4571,16 @@ class TestArrayInterface:
             nodata = None
 
         # Create Raster
-        ma1 = np.ma.masked_array(data=self.arr1.astype(dtype), mask=self.mask1)
-        rst = gu.Raster.from_array(ma1, transform=self.transform, crs=None, nodata=nodata)
+        with warnings.catch_warnings():
+            # For integer data types, unmasked nodata values can be created
+            if "int" in str(dtype):
+                warnings.filterwarnings(
+                    "ignore",
+                    category=UserWarning,
+                    message="Unmasked values equal to the nodata value found in data array.*",
+                )
+            ma1 = np.ma.masked_array(data=self.arr1.astype(dtype), mask=self.mask1)
+            rst = gu.Raster.from_array(ma1, transform=self.transform, crs=None, nodata=nodata)
 
         # Get array func
         arrfunc = getattr(np, arrfunc_str)
@@ -3740,10 +4657,18 @@ class TestArrayInterface:
         else:
             nodata2 = None
 
-        ma1 = np.ma.masked_array(data=self.arr1.astype(dtype1), mask=self.mask1)
-        ma2 = np.ma.masked_array(data=self.arr2.astype(dtype2), mask=self.mask2)
-        rst1 = gu.Raster.from_array(ma1, transform=self.transform, crs=None, nodata=nodata1)
-        rst2 = gu.Raster.from_array(ma2, transform=self.transform, crs=None, nodata=nodata2)
+        with warnings.catch_warnings():
+            # For integer data types, unmasked nodata values can be created
+            if any("int" in dtype for dtype in [str(dtype1), str(dtype2)]):
+                warnings.filterwarnings(
+                    "ignore",
+                    category=UserWarning,
+                    message="Unmasked values equal to the nodata value found in data array.*",
+                )
+            ma1 = np.ma.masked_array(data=self.arr1.astype(dtype1), mask=self.mask1)
+            ma2 = np.ma.masked_array(data=self.arr2.astype(dtype2), mask=self.mask2)
+            rst1 = gu.Raster.from_array(ma1, transform=self.transform, crs=None, nodata=nodata1)
+            rst2 = gu.Raster.from_array(ma2, transform=self.transform, crs=None, nodata=nodata2)
 
         # Get array func
         arrfunc = getattr(np, arrfunc_str)
@@ -3785,8 +4710,6 @@ class TestArrayInterface:
         output_rst = ufunc_2nin_1nout((rst1, rst2, rst3))
         output_ma = ufunc_2nin_1nout((ma1, ma2, ma3))
 
-        print(np.shape(output_ma))
-        print(np.shape(output_rst.data))
         assert np.ma.allequal(output_rst.data, output_ma)
 
         # Methods reduce only supports function that output a single value
@@ -3797,3 +4720,78 @@ class TestArrayInterface:
         #
         # assert np.ma.allequal(outputs_ma[0], outputs_rst[0].data) and np.ma.allequal(
         #             outputs_ma[1], outputs_rst[1].data)
+
+    @pytest.mark.parametrize(
+        "np_func_name", ufuncs_str_2nin_1nout + ufuncs_str_2nin_2nout + handled_functions_2in
+    )  # type: ignore
+    def test_raise_errors_2nin(self, np_func_name: str) -> None:
+        """Check that proper errors are raised when input raster/array don't match (only 2-input functions)."""
+
+        # Create Rasters
+        ma = np.ma.masked_array(data=self.arr1, mask=self.mask1)
+        ma_wrong_shape = np.ma.masked_array(data=self.arr_wrong_shape, mask=self.mask_wrong_shape)
+        rst = gu.Raster.from_array(
+            ma, transform=self.transform, crs=4326, nodata=_default_nodata(ma.dtype), area_or_point="Area"
+        )
+        rst_wrong_shape = gu.Raster.from_array(
+            ma_wrong_shape, transform=self.transform, crs=4326, nodata=_default_nodata(ma_wrong_shape.dtype)
+        )
+        rst_wrong_crs = gu.Raster.from_array(ma, transform=self.transform, crs=32610, nodata=_default_nodata(ma.dtype))
+        rst_wrong_transform = gu.Raster.from_array(
+            ma, transform=self.wrong_transform, crs=4326, nodata=_default_nodata(ma_wrong_shape.dtype)
+        )
+        rst_wrong_aop = gu.Raster.from_array(
+            ma, transform=self.transform, crs=4326, nodata=_default_nodata(ma_wrong_shape.dtype), area_or_point="Point"
+        )
+
+        # Get ufunc
+        np_func = getattr(np, np_func_name)
+
+        # Strange errors happening only for these 4 functions...
+        # See issue #457
+        if np_func_name not in ["allclose", "isclose", "array_equal", "array_equiv"]:
+
+            # Rasters with different CRS, transform, or shape
+            # Different shape
+            georef_tworaster_message = (
+                "Both rasters must have the same shape, transform and CRS for an arithmetic operation. "
+                "For example, use raster1 = raster1.reproject(raster2) to reproject raster1 on the "
+                "same grid and CRS than raster2."
+            )
+
+            with pytest.raises(ValueError, match=re.escape(georef_tworaster_message)):
+                np_func(rst, rst_wrong_shape)
+
+            # Different CRS
+            with pytest.raises(ValueError, match=re.escape(georef_tworaster_message)):
+                np_func(rst, rst_wrong_crs)
+
+            # Different transform
+            with pytest.raises(ValueError, match=re.escape(georef_tworaster_message)):
+                np_func(rst, rst_wrong_transform)
+
+            # Array with different shape
+            georef_raster_array_message = (
+                "The raster and array must have the same shape for an arithmetic operation. "
+                "For example, if the array comes from another raster, use raster1 = "
+                "raster1.reproject(raster2) beforehand to reproject raster1 on the same grid and CRS "
+                "than raster2. Or, if the array does not come from a raster, define one with raster = "
+                "Raster.from_array(array, array_transform, array_crs, array_nodata) then reproject."
+            )
+            # Different shape, masked array
+            # Check reflectivity just in case (just here, not later)
+            with pytest.raises(ValueError, match=re.escape(georef_raster_array_message)):
+                np_func(ma_wrong_shape, rst)
+            with pytest.raises(ValueError, match=re.escape(georef_raster_array_message)):
+                np_func(rst, ma_wrong_shape)
+
+            # Different shape, normal array with NaNs
+            with pytest.raises(ValueError, match=re.escape(georef_raster_array_message)):
+                np_func(ma_wrong_shape.filled(np.nan), rst)
+            with pytest.raises(ValueError, match=re.escape(georef_raster_array_message)):
+                np_func(rst, ma_wrong_shape.filled(np.nan))
+
+            aop_message = 'One raster has a pixel interpretation "Area" and the other "Point".*'
+
+            with pytest.raises(UserWarning, match=aop_message):
+                np_func(rst, rst_wrong_aop)

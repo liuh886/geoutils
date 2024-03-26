@@ -1,3 +1,6 @@
+ci:
+    autofix_prs: false
+    autoupdate_schedule: quarterly
 repos:
         - repo: https://github.com/pre-commit/pre-commit-hooks
           rev: v4.3.0
@@ -48,7 +51,9 @@ repos:
           hooks:
                 - id: mypy
                   args: [
+                        --config-file=mypy.ini,
                         --strict,
+                        --implicit-optional,
                         --ignore-missing-imports,  # Don't warn about stubs since pre-commit runs in a limited env
                         --allow-untyped-calls,  # Dynamic function/method calls are okay. Untyped function definitions are not okay.
                         --show-error-codes,
@@ -58,7 +63,7 @@ repos:
                         --disable-error-code=var-annotated,
                         --disable-error-code=no-any-return
                   ]
-                  additional_dependencies: [tokenize-rt==3.2.0]
+                  additional_dependencies: [tokenize-rt==3.2.0, numpy==1.22]
                   files: ^(geoutils|tests)
 
         # Sort imports using isort
@@ -99,3 +104,13 @@ repos:
           rev: 2.0.0
           hooks:
                 - id: relint
+        - repo: local
+          hooks:
+                # Generate pip's requirements.txt from conda's environment.yml to ensure consistency
+                - id: pip-to-conda
+                  name: Generate pip dependency from conda
+                  language: python
+                  entry: .github/scripts/generate_pip_deps_from_conda.py
+                  files: ^(environment.yml|requirements.txt)$
+                  pass_filenames: false
+                  additional_dependencies: [tomli, pyyaml]

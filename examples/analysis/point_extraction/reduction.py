@@ -15,7 +15,7 @@ rast = gu.Raster(filename_rast)
 rast.crop([rast.bounds.left, rast.bounds.bottom, rast.bounds.left + 2000, rast.bounds.bottom + 2000])
 
 # Plot the raster
-rast.show(cmap="terrain")
+rast.plot(cmap="terrain")
 
 # %%
 # We generate a random subsample of 100 coordinates to extract.
@@ -52,7 +52,7 @@ np.nanmean(vals - vals_reduced)
 coords = rast.coords(grid=True)
 x_closest = rast.copy(new_array=coords[0]).value_at_coords(x=x_coords, y=y_coords).squeeze()
 y_closest = rast.copy(new_array=coords[1]).value_at_coords(x=x_coords, y=y_coords).squeeze()
-from shapely import box
+from shapely.geometry import box
 
 geometry = [
     box(x - 2 * rast.res[0], y - 2 * rast.res[1], x + 2 * rast.res[0], y + 2 * rast.res[1])
